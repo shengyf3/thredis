@@ -468,18 +468,28 @@ void hsetCommand(redisClient *c) {
     int update;
     robj *o;
 
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+    lockKey(c,c->argv[1]);
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     hashTypeTryConversion(o,c->argv,2,3);
     hashTypeTryObjectEncoding(o,&c->argv[2], &c->argv[3]);
     update = hashTypeSet(o,c->argv[2],c->argv[3]);
     addReply(c, update ? shared.czero : shared.cone);
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
+    unlockKey(c,c->argv[1]);
 }
 
 void hsetnxCommand(redisClient *c) {
     robj *o;
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+
+    lockKey(c,c->argv[1]);
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     hashTypeTryConversion(o,c->argv,2,3);
 
     if (hashTypeExists(o, c->argv[2])) {
@@ -491,6 +501,7 @@ void hsetnxCommand(redisClient *c) {
         signalModifiedKey(c->db,c->argv[1]);
         server.dirty++;
     }
+    unlockKey(c,c->argv[1]);
 }
 
 void hmsetCommand(redisClient *c) {
@@ -502,7 +513,11 @@ void hmsetCommand(redisClient *c) {
         return;
     }
 
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+    lockKey(c,c->argv[1]);
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     hashTypeTryConversion(o,c->argv,2,c->argc-1);
     for (i = 2; i < c->argc; i += 2) {
         hashTypeTryObjectEncoding(o,&c->argv[i], &c->argv[i+1]);
@@ -511,6 +526,7 @@ void hmsetCommand(redisClient *c) {
     addReply(c, shared.ok);
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
+    unlockKey(c,c->argv[1]);
 }
 
 void hincrbyCommand(redisClient *c) {
@@ -518,11 +534,16 @@ void hincrbyCommand(redisClient *c) {
     robj *o, *current, *new;
 
     if (getLongLongFromObjectOrReply(c,c->argv[3],&incr,NULL) != REDIS_OK) return;
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+    lockKey(c,c->argv[1]);
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     if ((current = hashTypeGetObject(o,c->argv[2])) != NULL) {
         if (getLongLongFromObjectOrReply(c,current,&value,
             "hash value is not an integer") != REDIS_OK) {
             decrRefCount(current);
+            unlockKey(c,c->argv[1]);
             return;
         }
         decrRefCount(current);
@@ -534,6 +555,7 @@ void hincrbyCommand(redisClient *c) {
     if ((incr < 0 && oldvalue < 0 && incr < (LLONG_MIN-oldvalue)) ||
         (incr > 0 && oldvalue > 0 && incr > (LLONG_MAX-oldvalue))) {
         addReplyError(c,"increment or decrement would overflow");
+        unlockKey(c,c->argv[1]);
         return;
     }
     value += incr;
@@ -544,6 +566,7 @@ void hincrbyCommand(redisClient *c) {
     addReplyLongLong(c,value);
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
+    unlockKey(c,c->argv[1]);
 }
 
 void hincrbyfloatCommand(redisClient *c) {
@@ -551,11 +574,16 @@ void hincrbyfloatCommand(redisClient *c) {
     robj *o, *current, *new, *aux;
 
     if (getLongDoubleFromObjectOrReply(c,c->argv[3],&incr,NULL) != REDIS_OK) return;
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+    lockKey(c,c->argv[1]);
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     if ((current = hashTypeGetObject(o,c->argv[2])) != NULL) {
         if (getLongDoubleFromObjectOrReply(c,current,&value,
             "hash value is not a valid float") != REDIS_OK) {
             decrRefCount(current);
+            unlockKey(c,c->argv[1]);
             return;
         }
         decrRefCount(current);
@@ -579,6 +607,7 @@ void hincrbyfloatCommand(redisClient *c) {
     decrRefCount(aux);
     rewriteClientCommandArgument(c,3,new);
     decrRefCount(new);
+    unlockKey(c,c->argv[1]);
 }
 
 static void addHashFieldToReply(redisClient *c, robj *o, robj *field) {
@@ -623,10 +652,15 @@ static void addHashFieldToReply(redisClient *c, robj *o, robj *field) {
 void hgetCommand(redisClient *c) {
     robj *o;
 
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.nullbulk)) == NULL ||
-        checkType(c,o,REDIS_HASH)) return;
+        checkType(c,o,REDIS_HASH)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     addHashFieldToReply(c, o, c->argv[2]);
+    unlockKey(c,c->argv[1]);
 }
 
 void hmgetCommand(redisClient *c) {
@@ -651,8 +685,12 @@ void hdelCommand(redisClient *c) {
     robj *o;
     int j, deleted = 0;
 
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyWriteOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,o,REDIS_HASH)) return;
+        checkType(c,o,REDIS_HASH)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     for (j = 2; j < c->argc; j++) {
         if (hashTypeDelete(o,c->argv[j])) {
@@ -668,14 +706,20 @@ void hdelCommand(redisClient *c) {
         server.dirty += deleted;
     }
     addReplyLongLong(c,deleted);
+    unlockKey(c,c->argv[1]);
 }
 
 void hlenCommand(redisClient *c) {
     robj *o;
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,o,REDIS_HASH)) return;
+        checkType(c,o,REDIS_HASH)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     addReplyLongLong(c,hashTypeLength(o));
+    unlockKey(c,c->argv[1]);
 }
 
 static void addHashIteratorCursorToReply(redisClient *c, hashTypeIterator *hi, int what) {
@@ -708,8 +752,12 @@ void genericHgetallCommand(redisClient *c, int flags) {
     int multiplier = 0;
     int length, count = 0;
 
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.emptymultibulk)) == NULL
-        || checkType(c,o,REDIS_HASH)) return;
+        || checkType(c,o,REDIS_HASH)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (flags & REDIS_HASH_KEY) multiplier++;
     if (flags & REDIS_HASH_VALUE) multiplier++;
@@ -731,6 +779,7 @@ void genericHgetallCommand(redisClient *c, int flags) {
 
     hashTypeReleaseIterator(hi);
     redisAssert(count == length);
+    unlockKey(c,c->argv[1]);
 }
 
 void hkeysCommand(redisClient *c) {
@@ -747,8 +796,13 @@ void hgetallCommand(redisClient *c) {
 
 void hexistsCommand(redisClient *c) {
     robj *o;
-    if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,o,REDIS_HASH)) return;
 
+    lockKey(c,c->argv[1]);
+    o = lookupKeyReadOrReply(c,c->argv[1],shared.czero);
+    if (o  == NULL || checkType(c,o,REDIS_HASH)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     addReply(c, hashTypeExists(o,c->argv[2]) ? shared.cone : shared.czero);
+    unlockKey(c,c->argv[1]);
 }

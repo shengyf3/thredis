@@ -108,7 +108,6 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, robj *obj) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned int rank[ZSKIPLIST_MAXLEVEL];
     int i, level;
-
     redisAssert(!isnan(score));
     x = zsl->header;
     for (i = zsl->level-1; i >= 0; i--) {
@@ -123,6 +122,7 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, robj *obj) {
         }
         update[i] = x;
     }
+
     /* we assume the key is not already inside, since we allow duplicated
      * scores, and the re-insertion of score and redis object should never
      * happpen since the caller of zslInsert() should test in the hash table
@@ -136,6 +136,7 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, robj *obj) {
         }
         zsl->level = level;
     }
+
     x = zslCreateNode(level,score,obj);
     for (i = 0; i < level; i++) {
         x->level[i].forward = update[i]->level[i].forward;
@@ -866,6 +867,8 @@ void zaddGenericCommand(redisClient *c, int incr) {
         }
     }
 
+    lockKey(c, key);
+
     /* Lookup the key and create the sorted set if does not exist. */
     zobj = lookupKeyWrite(c->db,key);
     if (zobj == NULL) {
@@ -881,6 +884,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
         if (zobj->type != REDIS_ZSET) {
             addReply(c,shared.wrongtypeerr);
             zfree(scores);
+	    unlockKey(c, key);
             return;
         }
     }
@@ -901,6 +905,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
                         /* Don't need to check if the sorted set is empty
                          * because we know it has at least one element. */
                         zfree(scores);
+			unlockKey(c, key);
                         return;
                     }
                 }
@@ -944,6 +949,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
                         /* Don't need to check if the sorted set is empty
                          * because we know it has at least one element. */
                         zfree(scores);
+			unlockKey(c, key);
                         return;
                     }
                 }
@@ -979,6 +985,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
         addReplyDouble(c,score);
     else /* ZADD */
         addReplyLongLong(c,added);
+    unlockKey(c, key);
 }
 
 void zaddCommand(redisClient *c) {
@@ -994,8 +1001,12 @@ void zremCommand(redisClient *c) {
     robj *zobj;
     int deleted = 0, j;
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *eptr;
@@ -1042,6 +1053,7 @@ void zremCommand(redisClient *c) {
         server.dirty += deleted;
     }
     addReplyLongLong(c,deleted);
+    unlockKey(c,c->argv[1]);
 }
 
 void zremrangebyscoreCommand(redisClient *c) {
@@ -1056,8 +1068,12 @@ void zremrangebyscoreCommand(redisClient *c) {
         return;
     }
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         zobj->ptr = zzlDeleteRangeByScore(zobj->ptr,range,&deleted);
@@ -1074,6 +1090,7 @@ void zremrangebyscoreCommand(redisClient *c) {
     if (deleted) signalModifiedKey(c->db,key);
     server.dirty += deleted;
     addReplyLongLong(c,deleted);
+    unlockKey(c,c->argv[1]);
 }
 
 void zremrangebyrankCommand(redisClient *c) {
@@ -1087,8 +1104,12 @@ void zremrangebyrankCommand(redisClient *c) {
     if ((getLongFromObjectOrReply(c, c->argv[2], &start, NULL) != REDIS_OK) ||
         (getLongFromObjectOrReply(c, c->argv[3], &end, NULL) != REDIS_OK)) return;
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     /* Sanitize indexes. */
     llen = zsetLength(zobj);
@@ -1100,6 +1121,7 @@ void zremrangebyrankCommand(redisClient *c) {
      * The range is empty when start > end or start >= length. */
     if (start > end || start >= llen) {
         addReply(c,shared.czero);
+        unlockKey(c,c->argv[1]);
         return;
     }
     if (end >= llen) end = llen-1;
@@ -1122,6 +1144,7 @@ void zremrangebyrankCommand(redisClient *c) {
     if (deleted) signalModifiedKey(c->db,key);
     server.dirty += deleted;
     addReplyLongLong(c,deleted);
+    unlockKey(c,c->argv[1]);
 }
 
 typedef struct {
@@ -1485,6 +1508,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
     zset *dstzset;
     zskiplistNode *znode;
     int touched = 0;
+    robj **keys;
 
     /* expect setnum input keys to be given */
     if ((getLongFromObjectOrReply(c, c->argv[2], &setnum, NULL) != REDIS_OK))
@@ -1502,6 +1526,13 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
         return;
     }
 
+    /* lock keys */
+    keys = zmalloc(sizeof(robj *) * (setnum + 1));
+    keys[0] = dstkey;
+    for (i = 1, j = 3; i <= setnum; i++, j++)
+        keys[i] = c->argv[j];
+    lockKeys(c, keys, setnum+1);
+
     /* read keys to be used for input */
     src = zcalloc(sizeof(zsetopsrc) * setnum);
     for (i = 0, j = 3; i < setnum; i++, j++) {
@@ -1510,6 +1541,8 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
             if (obj->type != REDIS_ZSET && obj->type != REDIS_SET) {
                 zfree(src);
                 addReply(c,shared.wrongtypeerr);
+                unlockKeys(c, keys, setnum+1);
+                zfree(keys);
                 return;
             }
 
@@ -1536,6 +1569,8 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                             "weight value is not a float") != REDIS_OK)
                     {
                         zfree(src);
+                        unlockKeys(c, keys, setnum+1);
+                        zfree(keys);
                         return;
                     }
                 }
@@ -1550,12 +1585,16 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                 } else {
                     zfree(src);
                     addReply(c,shared.syntaxerr);
+                    unlockKeys(c, keys, setnum+1);
+                    zfree(keys);
                     return;
                 }
                 j++; remaining--;
             } else {
                 zfree(src);
                 addReply(c,shared.syntaxerr);
+                unlockKeys(c, keys, setnum+1);
+                zfree(keys);
                 return;
             }
         }
@@ -1612,6 +1651,7 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
             }
         }
     } else if (op == REDIS_OP_UNION) {
+
         for (i = 0; i < setnum; i++) {
             if (zuiLength(&src[i]) == 0)
                 continue;
@@ -1678,7 +1718,11 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
         decrRefCount(dstobj);
         addReply(c,shared.czero);
     }
+
     zfree(src);
+    unlockKeys(c, keys, setnum+1);
+    zfree(keys);
+
 }
 
 void zunionstoreCommand(redisClient *c) {
@@ -1708,8 +1752,12 @@ void zrangeGenericCommand(redisClient *c, int reverse) {
         return;
     }
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyReadOrReply(c,key,shared.emptymultibulk)) == NULL
-         || checkType(c,zobj,REDIS_ZSET)) return;
+        || checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     /* Sanitize indexes. */
     llen = zsetLength(zobj);
@@ -1721,6 +1769,7 @@ void zrangeGenericCommand(redisClient *c, int reverse) {
      * The range is empty when start > end or start >= length. */
     if (start > end || start >= llen) {
         addReply(c,shared.emptymultibulk);
+        unlockKey(c,c->argv[1]);
         return;
     }
     if (end >= llen) end = llen-1;
@@ -1789,6 +1838,7 @@ void zrangeGenericCommand(redisClient *c, int reverse) {
     } else {
         redisPanic("Unknown sorted set encoding");
     }
+    unlockKey(c,c->argv[1]);
 }
 
 void zrangeCommand(redisClient *c) {
@@ -1845,9 +1895,14 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         }
     }
 
+    lockKey(c,c->argv[1]);
+
     /* Ok, lookup the key and get the range */
     if ((zobj = lookupKeyReadOrReply(c,key,shared.emptymultibulk)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *zl = zobj->ptr;
@@ -1867,6 +1922,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         /* No "first" element in the specified interval. */
         if (eptr == NULL) {
             addReply(c, shared.emptymultibulk);
+            unlockKey(c,c->argv[1]);
             return;
         }
 
@@ -1935,6 +1991,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         /* No "first" element in the specified interval. */
         if (ln == NULL) {
             addReply(c, shared.emptymultibulk);
+            unlockKey(c,c->argv[1]);
             return;
         }
 
@@ -1984,6 +2041,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
     }
 
     setDeferredMultiBulkLength(c, replylen, rangelen);
+    unlockKey(c,c->argv[1]);
 }
 
 void zrangebyscoreCommand(redisClient *c) {
@@ -2006,9 +2064,14 @@ void zcountCommand(redisClient *c) {
         return;
     }
 
+    lockKey(c,c->argv[1]);
+
     /* Lookup the sorted set */
     if ((zobj = lookupKeyReadOrReply(c, key, shared.czero)) == NULL ||
-        checkType(c, zobj, REDIS_ZSET)) return;
+        checkType(c, zobj, REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *zl = zobj->ptr;
@@ -2069,16 +2132,22 @@ void zcountCommand(redisClient *c) {
     }
 
     addReplyLongLong(c, count);
+    unlockKey(c,c->argv[1]);
 }
 
 void zcardCommand(redisClient *c) {
     robj *key = c->argv[1];
     robj *zobj;
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyReadOrReply(c,key,shared.czero)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     addReplyLongLong(c,zsetLength(zobj));
+    unlockKey(c,c->argv[1]);
 }
 
 void zscoreCommand(redisClient *c) {
@@ -2086,8 +2155,12 @@ void zscoreCommand(redisClient *c) {
     robj *zobj;
     double score;
 
+    lockKey(c,c->argv[1]);
     if ((zobj = lookupKeyReadOrReply(c,key,shared.nullbulk)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         if (zzlFind(zobj->ptr,c->argv[2],&score) != NULL)
@@ -2109,6 +2182,7 @@ void zscoreCommand(redisClient *c) {
     } else {
         redisPanic("Unknown sorted set encoding");
     }
+    unlockKey(c,c->argv[1]);
 }
 
 void zrankGenericCommand(redisClient *c, int reverse) {
@@ -2118,8 +2192,13 @@ void zrankGenericCommand(redisClient *c, int reverse) {
     unsigned long llen;
     unsigned long rank;
 
+    lockKey(c,c->argv[1]);
+
     if ((zobj = lookupKeyReadOrReply(c,key,shared.nullbulk)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
     llen = zsetLength(zobj);
 
     redisAssertWithInfo(c,ele,ele->encoding == REDIS_ENCODING_RAW);
@@ -2170,6 +2249,7 @@ void zrankGenericCommand(redisClient *c, int reverse) {
     } else {
         redisPanic("Unknown sorted set encoding");
     }
+    unlockKey(c,c->argv[1]);
 }
 
 void zrankCommand(redisClient *c) {

@@ -60,7 +60,7 @@ redisClient *createClient(int fd) {
         anetNonBlock(NULL,fd);
         anetTcpNoDelay(NULL,fd);
         if (aeCreateFileEvent(server.el,fd,AE_READABLE,
-            readQueryFromClient, c) == AE_ERR)
+            clientReadHandler, c) == AE_ERR)
         {
             close(fd);
             zfree(c);
@@ -103,6 +103,20 @@ redisClient *createClient(int fd) {
     listSetMatchMethod(c->pubsub_patterns,listMatchObjects);
     if (fd != -1) listAddNodeTail(server.clients,c);
     initClientMultiState(c);
+
+    c->lock = zmalloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(c->lock, NULL);
+    c->refcount = 0;
+    c->busy = 0;
+    if (fd != -1)
+        scriptingInit(c);
+    else {
+        c->lua = NULL;
+        c->lua_client = NULL;
+    }
+    c->lua_time_start = 0;
+    c->lua_kill = 0;
+    
     return c;
 }
 
@@ -123,11 +137,14 @@ redisClient *createClient(int fd) {
 int prepareClientToWrite(redisClient *c) {
     if (c->flags & REDIS_LUA_CLIENT) return REDIS_OK;
     if (c->fd <= 0) return REDIS_ERR; /* Fake client */
+
     if (c->bufpos == 0 && listLength(c->reply) == 0 &&
         (c->replstate == REDIS_REPL_NONE ||
          c->replstate == REDIS_REPL_ONLINE) &&
         aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
-        sendReplyToClient, c) == AE_ERR) return REDIS_ERR;
+                          sendReplyToClient, c) == AE_ERR) {
+        return REDIS_ERR;
+    }
     return REDIS_OK;
 }
 
@@ -268,7 +285,6 @@ void _addReplyStringToList(redisClient *c, char *s, size_t len) {
 
 void addReply(redisClient *c, robj *obj) {
     if (prepareClientToWrite(c) != REDIS_OK) return;
-
     /* This is an important place where we can avoid copy-on-write
      * when there is a saving child running, avoiding touching the
      * refcount field of the object if it's not needed.
@@ -288,8 +304,7 @@ void addReply(redisClient *c, robj *obj) {
             int len;
 
             len = ll2string(buf,sizeof(buf),(long)obj->ptr);
-            if (_addReplyToBuffer(c,buf,len) == REDIS_OK)
-                return;
+            if (_addReplyToBuffer(c,buf,len) == REDIS_OK) return;
             /* else... continue with the normal code path, but should never
              * happen actually since we verified there is room. */
         }
@@ -591,7 +606,7 @@ void disconnectSlaves(void) {
     }
 }
 
-void freeClient(redisClient *c) {
+void deallocateClient(redisClient *c) {
     listNode *ln;
 
     /* If this is marked as current client unset it */
@@ -616,7 +631,7 @@ void freeClient(redisClient *c) {
     dictRelease(c->pubsub_channels);
     listRelease(c->pubsub_patterns);
     /* Obvious cleanup */
-    aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
+    //aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     listRelease(c->reply);
     freeClientArgv(c);
@@ -668,7 +683,21 @@ void freeClient(redisClient *c) {
     /* Release memory */
     zfree(c->argv);
     freeClientMultiState(c);
+
+    /* free lua interpreter */
+    scriptingRelease(c);
+
+    if (!pthread_mutex_destroy(c->lock))
+      zfree(c->lock);
     zfree(c);
+}
+
+void freeClient(redisClient *c) {
+    aeDeleteFileEvent(server.el,c->fd,AE_READABLE); // THREDIS TODO - is this right?
+    if (c->refcount <= 1)
+        deallocateClient(c);
+    else
+        c->refcount--;
 }
 
 /* Schedule a client to free it at a safe time in the serverCron() function.
@@ -700,6 +729,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(mask);
 
+    pthread_mutex_lock(c->lock);
     while(c->bufpos > 0 || listLength(c->reply)) {
         if (c->bufpos > 0) {
             if (c->flags & REDIS_MASTER) {
@@ -763,6 +793,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         } else {
             redisLog(REDIS_VERBOSE,
                 "Error writing to client: %s", strerror(errno));
+	    pthread_mutex_unlock(c->lock);
             freeClient(c);
             return;
         }
@@ -775,16 +806,19 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         /* Close connection after entire reply has been sent. */
         if (c->flags & REDIS_CLOSE_AFTER_REPLY) freeClient(c);
     }
+    pthread_mutex_unlock(c->lock);
 }
 
 /* resetClient prepare the client to process the next command */
 void resetClient(redisClient *c) {
+    redisAssertWithInfo(c,NULL,c->refcount > 0);
     freeClientArgv(c);
     c->reqtype = 0;
     c->multibulklen = 0;
     c->bulklen = -1;
     /* We clear the ASKING flag as well if we are not inside a MULTI. */
     if (!(c->flags & REDIS_MULTI)) c->flags &= (~REDIS_ASKING);
+    c->refcount--;
 }
 
 int processInlineBuffer(redisClient *c) {
@@ -974,13 +1008,22 @@ int processMultibulkBuffer(redisClient *c) {
 void processInputBuffer(redisClient *c) {
     /* Keep processing while there is something in the input buffer */
     while(sdslen(c->querybuf)) {
+
         /* Immediately abort if the client is in the middle of something. */
-        if (c->flags & REDIS_BLOCKED) return;
+        if (c->flags & REDIS_BLOCKED) {
+            c->busy = 0;
+            pthread_mutex_unlock(c->lock);
+            return;
+        }
 
         /* REDIS_CLOSE_AFTER_REPLY closes the connection once the reply is
          * written to the client. Make sure to not let the reply grow after
          * this flag has been set (i.e. don't process more commands). */
-        if (c->flags & REDIS_CLOSE_AFTER_REPLY) return;
+        if (c->flags & REDIS_CLOSE_AFTER_REPLY) {
+            c->busy = 0;
+            pthread_mutex_unlock(c->lock);
+            return;
+        }
 
         /* Determine request type when unknown. */
         if (!c->reqtype) {
@@ -1001,23 +1044,51 @@ void processInputBuffer(redisClient *c) {
 
         /* Multibulk processing could see a <= 0 length. */
         if (c->argc == 0) {
+            c->refcount++; /* because resetClient will decrement it */
             resetClient(c);
         } else {
-            /* Only reset the client when the command was executed. */
-            if (processCommand(c) == REDIS_OK)
+            if (processCommand(c) != REDIS_ADDED_TO_THREAD) {
+                c->refcount++;
                 resetClient(c);
+            } else {
+                /* at this point there may still be more pipelined
+                 * commands to process in this request. therefore we
+                 * cannot leave this loop and have to process them,
+                 * but we should allow other stuff to run, so we
+                 * trylock, and for as long as it's failing, we call
+                 * aeProcessEvents */
+                while (pthread_mutex_trylock(c->lock))
+                    aeProcessEvents(server.el, AE_ALL_EVENTS|AE_DONT_WAIT);
+            }
         }
     }
+    c->busy = 0;
+    pthread_mutex_unlock(c->lock);
 }
 
-void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
-    redisClient *c = (redisClient*) privdata;
-    int nread, readlen;
-    size_t qblen;
+void clientReadHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    redisClient *c = privdata;
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(mask);
 
-    server.current_client = c;
+    int rc = pthread_mutex_trylock(c->lock);
+    /* if trylock fails, simply carry on, until next time */
+    if (!rc) {
+        if (c->busy) {
+            pthread_mutex_unlock(c->lock);
+            return;
+        }
+        c->busy = 1;
+        readQueryFromClient(privdata);
+        c->busy = 0;
+    }
+}
+
+void readQueryFromClient(redisClient *c) {
+    int nread, readlen;
+    size_t qblen;
+
+    server.current_client = c; // THREDIS TODO - remove me?
     readlen = REDIS_IOBUF_LEN;
     /* If this is a multi bulk request, and we are processing a bulk reply
      * that is large enough, try to maximize the probability that the query
@@ -1036,17 +1107,19 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     qblen = sdslen(c->querybuf);
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
-    nread = read(fd, c->querybuf+qblen, readlen);
+    nread = read(c->fd, c->querybuf+qblen, readlen);
     if (nread == -1) {
         if (errno == EAGAIN) {
             nread = 0;
         } else {
             redisLog(REDIS_VERBOSE, "Reading from client: %s",strerror(errno));
+            pthread_mutex_unlock(c->lock);
             freeClient(c);
             return;
         }
     } else if (nread == 0) {
         redisLog(REDIS_VERBOSE, "Client closed connection");
+	pthread_mutex_unlock(c->lock);
         freeClient(c);
         return;
     }
@@ -1055,6 +1128,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         c->lastinteraction = server.unixtime;
     } else {
         server.current_client = NULL;
+	pthread_mutex_unlock(c->lock);
         return;
     }
     if (sdslen(c->querybuf) > server.client_max_querybuf_len) {
@@ -1064,9 +1138,11 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         redisLog(REDIS_WARNING,"Closing client that reached max query buffer length: %s (qbuf initial bytes: %s)", ci, bytes);
         sdsfree(ci);
         sdsfree(bytes);
+	pthread_mutex_unlock(c->lock);
         freeClient(c);
         return;
     }
+
     processInputBuffer(c);
     server.current_client = NULL;
 }

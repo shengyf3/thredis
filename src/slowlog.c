@@ -129,10 +129,14 @@ void slowlogReset(void) {
  * Redis slow log. */
 void slowlogCommand(redisClient *c) {
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"reset")) {
+        pthread_mutex_lock(server.lock);
         slowlogReset();
+        pthread_mutex_unlock(server.lock);
         addReply(c,shared.ok);
     } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"len")) {
+        pthread_mutex_lock(server.lock);
         addReplyLongLong(c,listLength(server.slowlog));
+        pthread_mutex_unlock(server.lock);
     } else if ((c->argc == 2 || c->argc == 3) &&
                !strcasecmp(c->argv[1]->ptr,"get"))
     {
@@ -146,6 +150,7 @@ void slowlogCommand(redisClient *c) {
             getLongFromObjectOrReply(c,c->argv[2],&count,NULL) != REDIS_OK)
             return;
 
+        pthread_mutex_lock(server.lock);
         listRewind(server.slowlog,&li);
         totentries = addDeferredMultiBulkLength(c);
         while(count-- && (ln = listNext(&li))) {
@@ -161,6 +166,7 @@ void slowlogCommand(redisClient *c) {
                 addReplyBulk(c,se->argv[j]);
             sent++;
         }
+        pthread_mutex_unlock(server.lock);
         setDeferredMultiBulkLength(c,totentries,sent);
     } else {
         addReplyError(c,

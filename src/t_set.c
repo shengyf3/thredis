@@ -251,6 +251,7 @@ void saddCommand(redisClient *c) {
     robj *set;
     int j, added = 0;
 
+    lockKey(c,c->argv[1]);
     set = lookupKeyWrite(c->db,c->argv[1]);
     if (set == NULL) {
         set = setTypeCreate(c->argv[2]);
@@ -258,6 +259,7 @@ void saddCommand(redisClient *c) {
     } else {
         if (set->type != REDIS_SET) {
             addReply(c,shared.wrongtypeerr);
+            unlockKey(c,c->argv[1]);
             return;
         }
     }
@@ -269,14 +271,19 @@ void saddCommand(redisClient *c) {
     if (added) signalModifiedKey(c->db,c->argv[1]);
     server.dirty += added;
     addReplyLongLong(c,added);
+    unlockKey(c,c->argv[1]);
 }
 
 void sremCommand(redisClient *c) {
     robj *set;
     int j, deleted = 0;
 
+    lockKey(c,c->argv[1]);
     if ((set = lookupKeyWriteOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,set,REDIS_SET)) return;
+        checkType(c,set,REDIS_SET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     for (j = 2; j < c->argc; j++) {
         if (setTypeRemove(set,c->argv[j])) {
@@ -292,10 +299,17 @@ void sremCommand(redisClient *c) {
         server.dirty += deleted;
     }
     addReplyLongLong(c,deleted);
+    unlockKey(c,c->argv[1]);
 }
 
 void smoveCommand(redisClient *c) {
     robj *srcset, *dstset, *ele;
+    robj **keys = zmalloc(sizeof(robj*)*2);
+
+    keys[0] = c->argv[1];
+    keys[1] = c->argv[2];
+    lockKeys(c,keys,2);
+
     srcset = lookupKeyWrite(c->db,c->argv[1]);
     dstset = lookupKeyWrite(c->db,c->argv[2]);
     ele = c->argv[3] = tryObjectEncoding(c->argv[3]);
@@ -303,6 +317,8 @@ void smoveCommand(redisClient *c) {
     /* If the source key does not exist return 0 */
     if (srcset == NULL) {
         addReply(c,shared.czero);
+        unlockKeys(c,keys,2);
+        zfree(keys);
         return;
     }
 
@@ -314,12 +330,16 @@ void smoveCommand(redisClient *c) {
     /* If srcset and dstset are equal, SMOVE is a no-op */
     if (srcset == dstset) {
         addReply(c,shared.cone);
+        unlockKeys(c,keys,2);
+        zfree(keys);
         return;
     }
 
     /* If the element cannot be removed from the src set, return 0. */
     if (!setTypeRemove(srcset,ele)) {
         addReply(c,shared.czero);
+        unlockKeys(c,keys,2);
+        zfree(keys);
         return;
     }
 
@@ -338,28 +358,40 @@ void smoveCommand(redisClient *c) {
     /* An extra key has changed when ele was successfully added to dstset */
     if (setTypeAdd(dstset,ele)) server.dirty++;
     addReply(c,shared.cone);
+    unlockKeys(c,keys,2);
+    zfree(keys);
 }
 
 void sismemberCommand(redisClient *c) {
     robj *set;
 
+    lockKey(c,c->argv[1]);
     if ((set = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,set,REDIS_SET)) return;
+        checkType(c,set,REDIS_SET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     c->argv[2] = tryObjectEncoding(c->argv[2]);
     if (setTypeIsMember(set,c->argv[2]))
         addReply(c,shared.cone);
     else
         addReply(c,shared.czero);
+    unlockKey(c,c->argv[1]);
 }
 
 void scardCommand(redisClient *c) {
     robj *o;
 
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,o,REDIS_SET)) return;
+        checkType(c,o,REDIS_SET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     addReplyLongLong(c,setTypeSize(o));
+    unlockKey(c,c->argv[1]);
 }
 
 void spopCommand(redisClient *c) {
@@ -367,8 +399,12 @@ void spopCommand(redisClient *c) {
     int64_t llele;
     int encoding;
 
+    lockKey(c,c->argv[1]);
     if ((set = lookupKeyWriteOrReply(c,c->argv[1],shared.nullbulk)) == NULL ||
-        checkType(c,set,REDIS_SET)) return;
+        checkType(c,set,REDIS_SET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     encoding = setTypeRandomElement(set,&ele,&llele);
     if (encoding == REDIS_ENCODING_INTSET) {
@@ -389,6 +425,7 @@ void spopCommand(redisClient *c) {
     if (setTypeSize(set) == 0) dbDelete(c->db,c->argv[1]);
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
+    unlockKey(c,c->argv[1]);
 }
 
 /* handle the "SRANDMEMBER key <count>" variant. The normal version of the
@@ -421,6 +458,7 @@ void srandmemberWithCountCommand(redisClient *c) {
 
     if ((set = lookupKeyReadOrReply(c,c->argv[1],shared.emptymultibulk))
         == NULL || checkType(c,set,REDIS_SET)) return;
+
     size = setTypeSize(set);
 
     /* If count is zero, serve it ASAP to avoid special cases later. */
@@ -542,16 +580,22 @@ void srandmemberCommand(redisClient *c) {
     int64_t llele;
     int encoding;
 
+    lockKey(c,c->argv[1]);
     if (c->argc == 3) {
         srandmemberWithCountCommand(c);
+        unlockKey(c,c->argv[1]);
         return;
     } else if (c->argc > 3) {
         addReply(c,shared.syntaxerr);
+        unlockKey(c,c->argv[1]);
         return;
     }
 
     if ((set = lookupKeyReadOrReply(c,c->argv[1],shared.nullbulk)) == NULL ||
-        checkType(c,set,REDIS_SET)) return;
+        checkType(c,set,REDIS_SET)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     encoding = setTypeRandomElement(set,&ele,&llele);
     if (encoding == REDIS_ENCODING_INTSET) {
@@ -559,6 +603,7 @@ void srandmemberCommand(redisClient *c) {
     } else {
         addReplyBulk(c,ele);
     }
+    unlockKey(c,c->argv[1]);
 }
 
 int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
@@ -573,6 +618,14 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
     void *replylen = NULL;
     unsigned long j, cardinality = 0;
     int encoding;
+    robj **keys = zmalloc(sizeof(robj*)*(setnum+1));
+    int n_keys;
+
+    for (j = 0; j < setnum; j++)
+        keys[j] = setkeys[j];
+    if (dstkey) keys[j] = dstkey;
+    n_keys = dstkey ? setnum + 1 : setnum;
+    lockKeys(c,keys,n_keys);
 
     for (j = 0; j < setnum; j++) {
         robj *setobj = dstkey ?
@@ -593,6 +646,8 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
         }
         if (checkType(c,setobj,REDIS_SET)) {
             zfree(sets);
+            unlockKeys(c,keys,n_keys);
+            zfree(keys);
             return;
         }
         sets[j] = setobj;
@@ -693,6 +748,8 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
         setDeferredMultiBulkLength(c,replylen,cardinality);
     }
     zfree(sets);
+    unlockKeys(c,keys,n_keys);
+    zfree(keys);
 }
 
 void sinterCommand(redisClient *c) {
@@ -712,6 +769,14 @@ void sunionDiffGenericCommand(redisClient *c, robj **setkeys, int setnum, robj *
     setTypeIterator *si;
     robj *ele, *dstset = NULL;
     int j, cardinality = 0;
+    robj **keys = zmalloc(sizeof(robj*)*(setnum+1));
+    int n_keys;
+
+    for (j = 0; j < setnum; j++)
+        keys[j] = setkeys[j];
+    if (dstkey) keys[j] = dstkey;
+    n_keys = dstkey ? setnum + 1 : setnum;
+    lockKeys(c,keys,n_keys);
 
     for (j = 0; j < setnum; j++) {
         robj *setobj = dstkey ?
@@ -723,6 +788,8 @@ void sunionDiffGenericCommand(redisClient *c, robj **setkeys, int setnum, robj *
         }
         if (checkType(c,setobj,REDIS_SET)) {
             zfree(sets);
+            unlockKeys(c,keys,n_keys);
+            zfree(keys);
             return;
         }
         sets[j] = setobj;
@@ -783,6 +850,8 @@ void sunionDiffGenericCommand(redisClient *c, robj **setkeys, int setnum, robj *
         server.dirty++;
     }
     zfree(sets);
+    unlockKeys(c,keys,n_keys);
+    zfree(keys);
 }
 
 void sunionCommand(redisClient *c) {

@@ -548,6 +548,16 @@ dictType keylistDictType = {
     dictListDestructor          /* val destructor */
 };
 
+/* locked keys hash table, mapping keys to client locks */
+dictType lockedKeysDictType = {
+    dictSdsHash,                /* hash function */
+    NULL,                       /* key dup */
+    NULL,                       /* val dup */
+    dictSdsKeyCompare,          /* key compare */
+    dictSdsDestructor,          /* key destructor */
+    NULL                        /* val destructor */
+};
+
 int htNeedsResize(dict *dict) {
     long long size, used;
 
@@ -563,10 +573,12 @@ void tryResizeHashTables(void) {
     int j;
 
     for (j = 0; j < server.dbnum; j++) {
+        pthread_mutex_lock(server.db[j].lock);
         if (htNeedsResize(server.db[j].dict))
             dictResize(server.db[j].dict);
         if (htNeedsResize(server.db[j].expires))
             dictResize(server.db[j].expires);
+        pthread_mutex_unlock(server.db[j].lock);
     }
 }
 
@@ -578,16 +590,20 @@ void incrementallyRehash(void) {
     int j;
 
     for (j = 0; j < server.dbnum; j++) {
+        pthread_mutex_lock(server.db[j].lock);
         /* Keys dictionary */
         if (dictIsRehashing(server.db[j].dict)) {
             dictRehashMilliseconds(server.db[j].dict,1);
+            pthread_mutex_unlock(server.db[j].lock);
             break; /* already used our millisecond for this loop... */
         }
         /* Expires */
         if (dictIsRehashing(server.db[j].expires)) {
             dictRehashMilliseconds(server.db[j].expires,1);
+            pthread_mutex_unlock(server.db[j].lock);
             break; /* already used our millisecond for this loop... */
         }
+        pthread_mutex_unlock(server.db[j].lock);
     }
 }
 
@@ -721,6 +737,7 @@ int clientsCronHandleTimeout(redisClient *c) {
             unblockClientWaitingData(c);
         }
     }
+
     return 0;
 }
 
@@ -771,11 +788,20 @@ void clientsCron(void) {
         listRotate(server.clients);
         head = listFirst(server.clients);
         c = listNodeValue(head);
-        /* The following functions do different service checks on the client.
-         * The protocol is that they return non-zero if the client was
-         * terminated. */
-        if (clientsCronHandleTimeout(c)) continue;
-        if (clientsCronResizeQueryBuffer(c)) continue;
+        if (!pthread_mutex_trylock(c->lock)) {
+            /* The following functions do different service checks on the client.
+             * The protocol is that they return non-zero if the client was
+             * terminated. */
+            if (clientsCronHandleTimeout(c)) {
+                pthread_mutex_unlock(c->lock);
+                continue;
+            }
+            if (clientsCronResizeQueryBuffer(c)) {
+                pthread_mutex_unlock(c->lock);
+                continue;
+            }
+            pthread_mutex_unlock(c->lock);
+	}
     }
 }
 
@@ -846,6 +872,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         for (j = 0; j < server.dbnum; j++) {
             long long size, used, vkeys;
 
+            pthread_mutex_lock(server.db[j].lock);
             size = dictSlots(server.db[j].dict);
             used = dictSize(server.db[j].dict);
             vkeys = dictSize(server.db[j].expires);
@@ -853,6 +880,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
                 redisLog(REDIS_VERBOSE,"DB %d: %lld keys (%lld volatile) in %lld slots HT.",j,used,vkeys,size);
                 /* dictPrintStats(server.dict); */
             }
+            pthread_mutex_unlock(server.db[j].lock);
         }
     }
 
@@ -942,7 +970,6 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
          }
     }
 
-
     /* If we postponed an AOF buffer flush, let's try to do it every time the
      * cron function is called. */
     if (server.aof_flush_postponed_start) flushAppendOnlyFile(0);
@@ -986,7 +1013,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 
         /* Process remaining data in the input buffer. */
         if (c->querybuf && sdslen(c->querybuf) > 0) {
-            server.current_client = c;
+            server.current_client = c; // THREDIS TODO - this may not work?
             processInputBuffer(c);
             server.current_client = NULL;
         }
@@ -1125,10 +1152,7 @@ void initServerConfig() {
     server.shutdown_asap = 0;
     server.repl_ping_slave_period = REDIS_REPL_PING_SLAVE_PERIOD;
     server.repl_timeout = REDIS_REPL_TIMEOUT;
-    server.lua_caller = NULL;
     server.lua_time_limit = REDIS_LUA_TIME_LIMIT;
-    server.lua_client = NULL;
-    server.lua_timedout = 0;
 
     updateLRUClock();
     resetServerSaveParams();
@@ -1283,6 +1307,9 @@ void initServer() {
         server.db[j].blocking_keys = dictCreate(&keylistDictType,NULL);
         server.db[j].ready_keys = dictCreate(&setDictType,NULL);
         server.db[j].watched_keys = dictCreate(&keylistDictType,NULL);
+        server.db[j].locked_keys = dictCreate(&lockedKeysDictType,NULL);
+        server.db[j].lock = zmalloc(sizeof(pthread_mutex_t));
+        pthread_mutex_init(server.db[j].lock, NULL);
         server.db[j].id = j;
     }
     server.pubsub_channels = dictCreate(&keylistDictType,NULL);
@@ -1331,6 +1358,10 @@ void initServer() {
         }
     }
 
+    server.tpool = threadpool_create(16, 1024, 0); // THREDIS TODO - this should be configurable
+    server.lock = zmalloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(server.lock, NULL);
+
     /* 32 bit instances are limited to 4GB of address space, so if there is
      * no explicit limit in the user provided configuration we set a limit
      * at 3 GB using maxmemory with 'noeviction' policy'. This avoids
@@ -1341,7 +1372,11 @@ void initServer() {
         server.maxmemory_policy = REDIS_MAXMEMORY_NO_EVICTION;
     }
 
-    scriptingInit();
+    /* Initialize a dictionary we use to map SHAs to scripts.
+     * This is useful for replication, as we need to replicate EVALSHA
+     * as EVAL, so we need to remember the associated script. */
+    server.lua_scripts = dictCreate(&dbDictType,NULL);
+
     slowlogInit();
     bioInit();
 }
@@ -1484,7 +1519,7 @@ void call(redisClient *c, int flags) {
     }
 
     /* Call the command. */
-    redisOpArrayInit(&server.also_propagate);
+    redisOpArrayInit(&server.also_propagate); // THREDIS TODO - is this a problem?
     dirty = server.dirty;
     c->cmd->proc(c);
     dirty = server.dirty-dirty;
@@ -1528,6 +1563,22 @@ void call(redisClient *c, int flags) {
         redisOpArrayFree(&server.also_propagate);
     }
     server.stat_numcommands++;
+}
+
+void callCommandAndResetClient(redisClient *c) {
+    /* call the actual command */
+    call(c,REDIS_CALL_FULL);
+
+    /* let the response be sent to the client */
+    pthread_mutex_lock(server.lock);
+    if (listLength(server.ready_keys))
+        handleClientsBlockedOnLists();
+    pthread_mutex_unlock(server.lock);
+
+    resetClient(c);    
+
+    /* this lock was locked earlier */
+    pthread_mutex_unlock(c->lock);
 }
 
 /* If this function gets called we already read a whole
@@ -1631,20 +1682,6 @@ int processCommand(redisClient *c) {
         return REDIS_OK;
     }
 
-    /* Lua script too slow? Only allow commands with REDIS_CMD_STALE flag. */
-    if (server.lua_timedout &&
-          c->cmd->proc != authCommand &&
-        !(c->cmd->proc == shutdownCommand &&
-          c->argc == 2 &&
-          tolower(((char*)c->argv[1]->ptr)[0]) == 'n') &&
-        !(c->cmd->proc == scriptCommand &&
-          c->argc == 2 &&
-          tolower(((char*)c->argv[1]->ptr)[0]) == 'k'))
-    {
-        addReply(c, shared.slowscripterr);
-        return REDIS_OK;
-    }
-
     /* Exec the command */
     if (c->flags & REDIS_MULTI &&
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
@@ -1653,12 +1690,40 @@ int processCommand(redisClient *c) {
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {
-        call(c,REDIS_CALL_FULL);
-        if (listLength(server.ready_keys))
-            handleClientsBlockedOnLists();
+        redisCommandProc *p = c->cmd->proc;
+
+        if (p == bitcountCommand || p == bitopCommand ||
+            p == evalCommand || p == evalShaCommand ||
+            p == execCommand || p == hkeysCommand ||
+            p == hvalsCommand || p == keysCommand ||
+            p == linsertCommand || p == lrangeCommand ||
+            p == lremCommand || p == lsetCommand ||
+            p == ltrimCommand || p == migrateCommand ||
+            p == restoreCommand || p == saddCommand ||
+            p == sdiffCommand || p == sdiffstoreCommand ||
+            p == sinterCommand || p == sinterstoreCommand ||
+            p == sortCommand || p == sunionCommand ||
+            p == sunionstoreCommand || p == zcountCommand ||
+            p == zinterstoreCommand || p == zrangeCommand ||
+            p == zrangebyscoreCommand || p == zremrangebyrankCommand ||
+            p == zremrangebyscoreCommand || p == zrevrangeCommand ||
+            p == zrevrangebyscoreCommand || p == zunionstoreCommand) {
+
+            c->refcount++;
+            threadpool_add(server.tpool, (void (*)(void *)) callCommandAndResetClient, (void *)c, 0);
+            return REDIS_ADDED_TO_THREAD;
+        } else {
+            call(c,REDIS_CALL_FULL);
+            pthread_mutex_lock(server.lock);
+            if (listLength(server.ready_keys))
+                handleClientsBlockedOnLists();
+            pthread_mutex_unlock(server.lock);
+        }
     }
     return REDIS_OK;
 }
+
+
 
 /*================================== Shutdown =============================== */
 
@@ -1908,7 +1973,7 @@ sds genRedisInfoString(char *section) {
             "used_memory_rss:%zu\r\n"
             "used_memory_peak:%zu\r\n"
             "used_memory_peak_human:%s\r\n"
-            "used_memory_lua:%lld\r\n"
+/*            "used_memory_lua:%lld\r\n"    */ //THREDIS TODO - can we account for Lua memory?
             "mem_fragmentation_ratio:%.2f\r\n"
             "mem_allocator:%s\r\n",
             zmalloc_used_memory(),
@@ -1916,7 +1981,7 @@ sds genRedisInfoString(char *section) {
             zmalloc_get_rss(),
             server.stat_peak_memory,
             peak_hmem,
-            ((long long)lua_gc(server.lua,LUA_GCCOUNT,0))*1024LL,
+/*          ((long long)lua_gc(server.lua,LUA_GCCOUNT,0))*1024LL,  */
             zmalloc_get_fragmentation_ratio(),
             ZMALLOC_LIB
             );
@@ -2166,16 +2231,17 @@ sds genRedisInfoString(char *section) {
 
 void infoCommand(redisClient *c) {
     char *section = c->argc == 2 ? c->argv[1]->ptr : "default";
-
     if (c->argc > 2) {
         addReply(c,shared.syntaxerr);
         return;
     }
+    pthread_mutex_lock(server.lock);
     sds info = genRedisInfoString(section);
     addReplySds(c,sdscatprintf(sdsempty(),"$%lu\r\n",
         (unsigned long)sdslen(info)));
     addReplySds(c,info);
     addReply(c,shared.crlf);
+    pthread_mutex_unlock(server.lock);
 }
 
 void monitorCommand(redisClient *c) {
@@ -2184,7 +2250,9 @@ void monitorCommand(redisClient *c) {
 
     c->flags |= (REDIS_SLAVE|REDIS_MONITOR);
     c->slaveseldb = 0;
+    pthread_mutex_lock(server.lock);
     listAddNodeTail(server.monitors,c);
+    pthread_mutex_unlock(server.lock);
     addReply(c,shared.ok);
 }
 
@@ -2250,6 +2318,8 @@ int freeMemoryIfNeeded(void) {
             redisDb *db = server.db+j;
             dict *dict;
 
+            pthread_mutex_lock(db->lock);
+
             if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_LRU ||
                 server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM)
             {
@@ -2257,7 +2327,10 @@ int freeMemoryIfNeeded(void) {
             } else {
                 dict = server.db[j].expires;
             }
-            if (dictSize(dict) == 0) continue;
+            if (dictSize(dict) == 0) {
+                pthread_mutex_unlock(db->lock);
+                continue;
+            }
 
             /* volatile-random and allkeys-random policy */
             if (server.maxmemory_policy == REDIS_MAXMEMORY_ALLKEYS_RANDOM ||
@@ -2265,6 +2338,10 @@ int freeMemoryIfNeeded(void) {
             {
                 de = dictGetRandomKey(dict);
                 bestkey = dictGetKey(de);
+                if (dictFind(db->locked_keys, bestkey)) {
+                    pthread_mutex_unlock(db->lock);
+                    continue; /* never free locked keys */
+                }
             }
 
             /* volatile-lru and allkeys-lru policy */
@@ -2278,7 +2355,11 @@ int freeMemoryIfNeeded(void) {
 
                     de = dictGetRandomKey(dict);
                     thiskey = dictGetKey(de);
-                    /* When policy is volatile-lru we need an additional lookup
+
+                    if (dictFind(db->locked_keys, thiskey))
+                        continue; /* never free locked keys */
+
+                    /* When policy is volatile-lru we need an additonal lookup
                      * to locate the real key, as dict is set to db->expires. */
                     if (server.maxmemory_policy == REDIS_MAXMEMORY_VOLATILE_LRU)
                         de = dictFind(db->dict, thiskey);
@@ -2301,6 +2382,9 @@ int freeMemoryIfNeeded(void) {
 
                     de = dictGetRandomKey(dict);
                     thiskey = dictGetKey(de);
+                    if (dictFind(db->locked_keys, thiskey)) {
+                        continue; /* never free locked keys */
+                    }
                     thisval = (long) dictGetVal(de);
 
                     /* Expire sooner (minor expire unix timestamp) is better
@@ -2340,10 +2424,92 @@ int freeMemoryIfNeeded(void) {
                  * transmission here inside the loop. */
                 if (slaves) flushSlavesOutputBuffers();
             }
+            pthread_mutex_unlock(db->lock);
         }
         if (!keys_freed) return REDIS_ERR; /* nothing to free... */
     }
     return REDIS_OK;
+}
+
+/* ================================= Locking ================================ */
+
+int _compare_keys(const void *k1, const void *k2) {
+    return strcasecmp((*(robj **)k1)->ptr, (*(robj **)k2)->ptr);
+}
+
+// THREDIS TODO - these should all be macros
+
+void lockKeys(redisClient *c, robj **keys, int n_keys) {
+    int i;
+
+    /* keys must be sorted to avoid deadlock */
+    qsort(keys, n_keys, sizeof(robj *), _compare_keys);
+
+    /* and if any of locks fails, we unroll all locks and try again -
+     * this is a simple and effective circular deadlock prevention
+     * technique */
+    while (1) {
+        for (i=0; i<n_keys; i++)
+            if (genericLockKey(c,keys[i],1))
+                break;
+        if (i < n_keys) {
+            /* we failed above, unroll */
+            for (i--; i>=0; i--)
+                unlockKey(c,keys[i]);
+            pthread_yield();
+        } else
+            break; /* success */
+    }
+}
+
+void unlockKeys(redisClient *c, robj **keys, int n_keys) {
+    int i;
+    /* we assume that the keys have already been sorted in lockKeys! */
+    for (i=n_keys-1; i>=0; i--)
+        unlockKey(c,keys[i]);
+}
+
+void lockKey(redisClient *c, robj *key) {
+    genericLockKey(c, key, 0);
+}
+
+int genericLockKey(redisClient *c, robj *key, int trylock) {
+  dictEntry *de;
+
+  pthread_mutex_lock(c->db->lock); 
+  de = dictFind(c->db->locked_keys, key->ptr);
+  if (!de) {
+      dictAdd(c->db->locked_keys, sdsdup(key->ptr), c->lock);
+      pthread_mutex_unlock(c->db->lock);
+  } else {
+      pthread_mutex_t *lock = dictGetVal(de);
+      
+      /* we have to unlock this before locking c-lock to avoid deadlock */
+      pthread_mutex_unlock(c->db->lock);
+
+      if (lock == c->lock)
+          return 0;
+
+      if (trylock) {
+          struct timespec   ts;
+          struct timeval    tp;
+          if (gettimeofday(&tp, NULL))
+              redisPanic("gettimeofday failed, on Linux make sure the process has CAP_SYS_TIME");
+          ts.tv_sec  = tp.tv_sec;
+          ts.tv_nsec = tp.tv_usec * 100000000; /* 100ms */
+          if (pthread_mutex_timedlock(lock, &ts))
+              return 1;
+      } else
+          pthread_mutex_lock(lock);
+    
+    dictReplace(c->db->locked_keys, sdsdup(key->ptr), c->lock);
+    pthread_mutex_unlock(lock);
+  }
+  return 0;
+}
+
+void unlockKey(redisClient *c, robj *key) {
+  dictDelete(c->db->locked_keys, key->ptr);
 }
 
 /* =================================== Main! ================================ */

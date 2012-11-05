@@ -59,6 +59,7 @@ start_server {tags {"pubsub"}} {
 
         # unsubscribe from one of the channels
         unsubscribe $rd1 {chan1}
+
         assert_equal 0 [r publish chan1 hello]
         assert_equal 1 [r publish chan2 world]
         assert_equal {message chan2 world} [$rd1 read]

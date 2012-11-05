@@ -123,6 +123,7 @@ void setbitCommand(redisClient *c) {
         return;
     }
 
+    lockKey(c,c->argv[1]);
     o = lookupKeyWrite(c->db,c->argv[1]);
     if (o == NULL) {
         o = createObject(REDIS_STRING,sdsempty());
@@ -155,6 +156,7 @@ void setbitCommand(redisClient *c) {
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
     addReply(c, bitval ? shared.cone : shared.czero);
+    unlockKey(c,c->argv[1]);
 }
 
 /* GETBIT key offset */
@@ -168,8 +170,12 @@ void getbitCommand(redisClient *c) {
     if (getBitOffsetFromArgument(c,c->argv[2],&bitoffset) != REDIS_OK)
         return;
 
+    lockKey(c,c->argv[1]);
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,o,REDIS_STRING)) return;
+        checkType(c,o,REDIS_STRING)) {
+        unlockKey(c,c->argv[1]);
+        return;
+    }
 
     byte = bitoffset >> 3;
     bit = 7 - (bitoffset & 0x7);
@@ -182,6 +188,7 @@ void getbitCommand(redisClient *c) {
     }
 
     addReply(c, bitval ? shared.cone : shared.czero);
+    unlockKey(c,c->argv[1]);
 }
 
 /* BITOP op_name target_key src_key1 src_key2 src_key3 ... src_keyN */
@@ -215,12 +222,15 @@ void bitopCommand(redisClient *c) {
         return;
     }
 
+    lockKey(c,targetkey);
+
     /* Lookup keys, and store pointers to the string objects into an array. */
     numkeys = c->argc - 3;
     src = zmalloc(sizeof(unsigned char*) * numkeys);
     len = zmalloc(sizeof(long) * numkeys);
     objects = zmalloc(sizeof(robj*) * numkeys);
     for (j = 0; j < numkeys; j++) {
+        lockKey(c,c->argv[j+3]);
         o = lookupKeyRead(c->db,c->argv[j+3]);
         /* Handle non-existing keys as empty strings. */
         if (o == NULL) {
@@ -232,9 +242,11 @@ void bitopCommand(redisClient *c) {
         }
         /* Return an error if one of the keys is not a string. */
         if (checkType(c,o,REDIS_STRING)) {
+            unlockKey(c,c->argv[j+3]);
             for (j = j-1; j >= 0; j--) {
                 if (objects[j])
                     decrRefCount(objects[j]);
+                unlockKey(c,c->argv[j+3]);
             }
             zfree(src);
             zfree(len);
@@ -337,6 +349,7 @@ void bitopCommand(redisClient *c) {
     for (j = 0; j < numkeys; j++) {
         if (objects[j])
             decrRefCount(objects[j]);
+        unlockKey(c,c->argv[j+3]);
     }
     zfree(src);
     zfree(len);
@@ -352,6 +365,7 @@ void bitopCommand(redisClient *c) {
     }
     server.dirty++;
     addReplyLongLong(c,maxlen); /* Return the output string length in bytes. */
+    unlockKey(c,targetkey);
 }
 
 /* BITCOUNT key [start end] */
@@ -365,6 +379,7 @@ void bitcountCommand(redisClient *c) {
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
         checkType(c,o,REDIS_STRING)) return;
 
+    lockKey(c,c->argv[1]);
     /* Set the 'p' pointer to the string, that can be just a stack allocated
      * array if our string was integer encoded. */
     if (o->encoding == REDIS_ENCODING_INT) {
@@ -377,10 +392,14 @@ void bitcountCommand(redisClient *c) {
 
     /* Parse start/end range if any. */
     if (c->argc == 4) {
-        if (getLongFromObjectOrReply(c,c->argv[2],&start,NULL) != REDIS_OK)
+        if (getLongFromObjectOrReply(c,c->argv[2],&start,NULL) != REDIS_OK) {
+            unlockKey(c,c->argv[1]);
             return;
-        if (getLongFromObjectOrReply(c,c->argv[3],&end,NULL) != REDIS_OK)
+        }
+        if (getLongFromObjectOrReply(c,c->argv[3],&end,NULL) != REDIS_OK) {
+            unlockKey(c,c->argv[1]);
             return;
+        }
         /* Convert negative indexes */
         if (start < 0) start = strlen+start;
         if (end < 0) end = strlen+end;
@@ -394,6 +413,7 @@ void bitcountCommand(redisClient *c) {
     } else {
         /* Syntax error. */
         addReply(c,shared.syntaxerr);
+        unlockKey(c,c->argv[1]);
         return;
     }
 
@@ -406,4 +426,5 @@ void bitcountCommand(redisClient *c) {
 
         addReplyLongLong(c,popcount(p+start,bytes));
     }
+    unlockKey(c,c->argv[1]);
 }

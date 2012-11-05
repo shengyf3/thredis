@@ -186,6 +186,23 @@ void sortCommand(redisClient *c) {
     int int_convertion_error = 0;
     robj *sortval, *sortby = NULL, *storekey = NULL;
     redisSortObject *vector; /* Resulting vector to sort */
+    robj **keys;
+    int n_keys;
+
+    /* this is a little tricky with respect to locking... if the
+     * argument before last is 'store', then the last arg is the
+     * destination key */
+    if (!strcasecmp(c->argv[c->argc-2]->ptr,"store") && c->argc >= 4) {
+        keys = zmalloc(sizeof(robj *)*2);
+        keys[0] = c->argv[1];
+        keys[1] = c->argv[c->argc-1];
+        n_keys = 2;
+    } else {
+        keys = zmalloc(sizeof(robj *));
+        keys[0] = c->argv[1];
+        n_keys = 1;
+    }
+    lockKeys(c,keys,n_keys);
 
     /* Lookup the key to sort. It must be of the right types */
     sortval = lookupKeyRead(c->db,c->argv[1]);
@@ -194,6 +211,8 @@ void sortCommand(redisClient *c) {
                    sortval->type != REDIS_ZSET)
     {
         addReply(c,shared.wrongtypeerr);
+        unlockKeys(c,keys,n_keys);
+        zfree(keys);
         return;
     }
 
@@ -242,6 +261,8 @@ void sortCommand(redisClient *c) {
             decrRefCount(sortval);
             listRelease(operations);
             addReply(c,shared.syntaxerr);
+            unlockKeys(c,keys,n_keys);
+            zfree(keys);
             return;
         }
         j++;
@@ -524,6 +545,9 @@ void sortCommand(redisClient *c) {
             decrRefCount(vector[j].u.cmpobj);
     }
     zfree(vector);
+
+    unlockKeys(c,keys,n_keys);
+    zfree(keys);
 }
 
 

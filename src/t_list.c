@@ -296,11 +296,17 @@ void listTypeConvert(robj *subject, int enc) {
 
 void pushGenericCommand(redisClient *c, int where) {
     int j, waiting = 0, pushed = 0;
-    robj *lobj = lookupKeyWrite(c->db,c->argv[1]);
-    int may_have_waiting_clients = (lobj == NULL);
+    robj *lobj;
+    int may_have_waiting_clients;
+
+    lockKey(c, c->argv[1]);
+
+    lobj = lookupKeyWrite(c->db,c->argv[1]);
+    may_have_waiting_clients = (lobj == NULL);
 
     if (lobj && lobj->type != REDIS_LIST) {
         addReply(c,shared.wrongtypeerr);
+        unlockKey(c, c->argv[1]);
         return;
     }
 
@@ -318,6 +324,7 @@ void pushGenericCommand(redisClient *c, int where) {
     addReplyLongLong(c, waiting + (lobj ? listTypeLength(lobj) : 0));
     if (pushed) signalModifiedKey(c->db,c->argv[1]);
     server.dirty += pushed;
+    unlockKey(c, c->argv[1]);
 }
 
 void lpushCommand(redisClient *c) {
@@ -334,8 +341,13 @@ void pushxGenericCommand(redisClient *c, robj *refval, robj *val, int where) {
     listTypeEntry entry;
     int inserted = 0;
 
+    lockKey(c, c->argv[1]);
+
     if ((subject = lookupKeyReadOrReply(c,c->argv[1],shared.czero)) == NULL ||
-        checkType(c,subject,REDIS_LIST)) return;
+        checkType(c,subject,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
 
     if (refval != NULL) {
         /* Note: we expect refval to be string-encoded because it is *not* the
@@ -379,6 +391,7 @@ void pushxGenericCommand(redisClient *c, robj *refval, robj *val, int where) {
     }
 
     addReplyLongLong(c,listTypeLength(subject));
+    unlockKey(c, c->argv[1]);
 }
 
 void lpushxCommand(redisClient *c) {
@@ -403,9 +416,15 @@ void linsertCommand(redisClient *c) {
 }
 
 void llenCommand(redisClient *c) {
-    robj *o = lookupKeyReadOrReply(c,c->argv[1],shared.czero);
-    if (o == NULL || checkType(c,o,REDIS_LIST)) return;
+    robj *o;
+    lockKey(c, c->argv[1]);
+    o = lookupKeyReadOrReply(c,c->argv[1],shared.czero);
+    if (o == NULL || checkType(c,o,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
     addReplyLongLong(c,listTypeLength(o));
+    unlockKey(c, c->argv[1]);
 }
 
 void lindexCommand(redisClient *c) {
@@ -416,6 +435,8 @@ void lindexCommand(redisClient *c) {
 
     if ((getLongFromObjectOrReply(c, c->argv[2], &index, NULL) != REDIS_OK))
         return;
+
+    lockKey(c, c->argv[1]);
 
     if (o->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *p;
@@ -445,16 +466,26 @@ void lindexCommand(redisClient *c) {
     } else {
         redisPanic("Unknown list encoding");
     }
+    unlockKey(c, c->argv[1]);
 }
 
 void lsetCommand(redisClient *c) {
-    robj *o = lookupKeyWriteOrReply(c,c->argv[1],shared.nokeyerr);
-    if (o == NULL || checkType(c,o,REDIS_LIST)) return;
+    robj *o, *value;
     long index;
-    robj *value = (c->argv[3] = tryObjectEncoding(c->argv[3]));
 
-    if ((getLongFromObjectOrReply(c, c->argv[2], &index, NULL) != REDIS_OK))
+    lockKey(c, c->argv[1]);
+
+    o = lookupKeyWriteOrReply(c,c->argv[1],shared.nokeyerr);
+    if (o == NULL || checkType(c,o,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
         return;
+    }
+    value = (c->argv[3] = tryObjectEncoding(c->argv[3]));
+
+    if ((getLongFromObjectOrReply(c, c->argv[2], &index, NULL) != REDIS_OK)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
 
     listTypeTryConversion(o,value);
     if (o->encoding == REDIS_ENCODING_ZIPLIST) {
@@ -486,11 +517,18 @@ void lsetCommand(redisClient *c) {
     } else {
         redisPanic("Unknown list encoding");
     }
+    unlockKey(c, c->argv[1]);
 }
 
 void popGenericCommand(redisClient *c, int where) {
-    robj *o = lookupKeyWriteOrReply(c,c->argv[1],shared.nullbulk);
-    if (o == NULL || checkType(c,o,REDIS_LIST)) return;
+    robj *o;
+
+    lockKey(c, c->argv[1]);
+    o = lookupKeyWriteOrReply(c,c->argv[1],shared.nullbulk);
+    if (o == NULL || checkType(c,o,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
 
     robj *value = listTypePop(o,where);
     if (value == NULL) {
@@ -502,6 +540,7 @@ void popGenericCommand(redisClient *c, int where) {
         signalModifiedKey(c->db,c->argv[1]);
         server.dirty++;
     }
+    unlockKey(c, c->argv[1]);
 }
 
 void lpopCommand(redisClient *c) {
@@ -516,11 +555,19 @@ void lrangeCommand(redisClient *c) {
     robj *o;
     long start, end, llen, rangelen;
 
+    lockKey(c, c->argv[1]);
+
     if ((getLongFromObjectOrReply(c, c->argv[2], &start, NULL) != REDIS_OK) ||
-        (getLongFromObjectOrReply(c, c->argv[3], &end, NULL) != REDIS_OK)) return;
+        (getLongFromObjectOrReply(c, c->argv[3], &end, NULL) != REDIS_OK)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
 
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.emptymultibulk)) == NULL
-         || checkType(c,o,REDIS_LIST)) return;
+        || checkType(c,o,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
     llen = listTypeLength(o);
 
     /* convert negative indexes */
@@ -532,6 +579,7 @@ void lrangeCommand(redisClient *c) {
      * The range is empty when start > end or start >= length. */
     if (start > end || start >= llen) {
         addReply(c,shared.emptymultibulk);
+        unlockKey(c, c->argv[1]);
         return;
     }
     if (end >= llen) end = llen-1;
@@ -569,6 +617,7 @@ void lrangeCommand(redisClient *c) {
     } else {
         redisPanic("List encoding is not LINKEDLIST nor ZIPLIST!");
     }
+    unlockKey(c, c->argv[1]);
 }
 
 void ltrimCommand(redisClient *c) {
@@ -580,8 +629,13 @@ void ltrimCommand(redisClient *c) {
     if ((getLongFromObjectOrReply(c, c->argv[2], &start, NULL) != REDIS_OK) ||
         (getLongFromObjectOrReply(c, c->argv[3], &end, NULL) != REDIS_OK)) return;
 
+    lockKey(c, c->argv[1]);
+
     if ((o = lookupKeyWriteOrReply(c,c->argv[1],shared.ok)) == NULL ||
-        checkType(c,o,REDIS_LIST)) return;
+        checkType(c,o,REDIS_LIST)) {
+        unlockKey(c, c->argv[1]);
+        return;
+    }
     llen = listTypeLength(o);
 
     /* convert negative indexes */
@@ -622,6 +676,7 @@ void ltrimCommand(redisClient *c) {
     signalModifiedKey(c->db,c->argv[1]);
     server.dirty++;
     addReply(c,shared.ok);
+    unlockKey(c, c->argv[1]);
 }
 
 void lremCommand(redisClient *c) {
@@ -631,8 +686,12 @@ void lremCommand(redisClient *c) {
     long removed = 0;
     listTypeEntry entry;
 
-    if ((getLongFromObjectOrReply(c, c->argv[2], &toremove, NULL) != REDIS_OK))
+    lockKey(c, c->argv[1]);
+
+    if ((getLongFromObjectOrReply(c, c->argv[2], &toremove, NULL) != REDIS_OK)) {
+        unlockKey(c, c->argv[1]);
         return;
+    }
 
     subject = lookupKeyWriteOrReply(c,c->argv[1],shared.czero);
     if (subject == NULL || checkType(c,subject,REDIS_LIST)) return;
@@ -666,6 +725,8 @@ void lremCommand(redisClient *c) {
     if (listTypeLength(subject) == 0) dbDelete(c->db,c->argv[1]);
     addReplyLongLong(c,removed);
     if (removed) signalModifiedKey(c->db,c->argv[1]);
+
+    unlockKey(c, c->argv[1]);
 }
 
 /* This is the semantic of this command:
@@ -698,9 +759,19 @@ void rpoplpushHandlePush(redisClient *c, robj *dstkey, robj *dstobj, robj *value
 }
 
 void rpoplpushCommand(redisClient *c) {
-    robj *sobj, *value;
+    robj *sobj, *value, **keys;
+
+    keys = zmalloc(sizeof(robj *) * 2);
+    keys[0] = c->argv[1];
+    keys[1] = c->argv[2];
+    lockKeys(c, keys, 2);
+
     if ((sobj = lookupKeyWriteOrReply(c,c->argv[1],shared.nullbulk)) == NULL ||
-        checkType(c,sobj,REDIS_LIST)) return;
+        checkType(c,sobj,REDIS_LIST)) {
+        unlockKeys(c, keys, 2);
+        zfree(keys);
+        return;
+    }
 
     if (listTypeLength(sobj) == 0) {
         /* This may only happen after loading very old RDB files. Recent
@@ -727,6 +798,8 @@ void rpoplpushCommand(redisClient *c) {
         decrRefCount(touchedkey);
         server.dirty++;
     }
+    unlockKeys(c, keys, 2);
+    zfree(keys);
 }
 
 /*-----------------------------------------------------------------------------
@@ -756,6 +829,8 @@ void blockForKeys(redisClient *c, robj **keys, int numkeys, time_t timeout, robj
     dictEntry *de;
     list *l;
     int j;
+
+    //pthread_mutex_lock(server.lock);
 
     c->bpop.keys = zmalloc(sizeof(robj*)*numkeys);
     c->bpop.count = numkeys;
@@ -789,6 +864,7 @@ void blockForKeys(redisClient *c, robj **keys, int numkeys, time_t timeout, robj
     /* Mark the client as a blocked client */
     c->flags |= REDIS_BLOCKED;
     server.bpop_blocked_clients++;
+    //pthread_mutex_unlock(server.lock);
 }
 
 /* Unblock a client that's waiting in a blocking operation such as BLPOP */
@@ -1030,12 +1106,18 @@ int getTimeoutFromObjectOrReply(redisClient *c, robj *object, time_t *timeout) {
 
 /* Blocking RPOP/LPOP */
 void blockingPopGenericCommand(redisClient *c, int where) {
-    robj *o;
+    robj *o, **keys;
     time_t timeout;
     int j;
 
     if (getTimeoutFromObjectOrReply(c,c->argv[c->argc-1],&timeout) != REDIS_OK)
         return;
+
+    /* lock keys */
+    keys = zmalloc(sizeof(robj *) * (c->argc - 2));
+    for (j = 1; j < c->argc-1; j++)
+        keys[j-1] = c->argv[j];
+    lockKeys(c, keys, c->argc - 2);
 
     for (j = 1; j < c->argc-1; j++) {
         o = lookupKeyWrite(c->db,c->argv[j]);
@@ -1061,6 +1143,8 @@ void blockingPopGenericCommand(redisClient *c, int where) {
                     rewriteClientCommandVector(c,2,
                         (where == REDIS_HEAD) ? shared.lpop : shared.rpop,
                         c->argv[j]);
+                    unlockKeys(c, keys, c->argc-2);
+                    zfree(keys);
                     return;
                 }
             }
@@ -1071,11 +1155,16 @@ void blockingPopGenericCommand(redisClient *c, int where) {
      * we can do is treating it as a timeout (even with timeout 0). */
     if (c->flags & REDIS_MULTI) {
         addReply(c,shared.nullmultibulk);
+        unlockKeys(c, keys, c->argc-2);
+        zfree(keys);
         return;
     }
 
     /* If the list is empty or the key does not exists we must block */
     blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL);
+
+    unlockKeys(c, keys, c->argc-2);
+    zfree(keys);
 }
 
 void blpopCommand(redisClient *c) {
@@ -1088,9 +1177,15 @@ void brpopCommand(redisClient *c) {
 
 void brpoplpushCommand(redisClient *c) {
     time_t timeout;
+    robj **keys;
 
     if (getTimeoutFromObjectOrReply(c,c->argv[3],&timeout) != REDIS_OK)
         return;
+
+    keys = zmalloc(sizeof(robj *) * 2);
+    keys[0] = c->argv[1];
+    keys[1] = c->argv[2];
+    lockKeys(c, keys, 2);
 
     robj *key = lookupKeyWrite(c->db, c->argv[1]);
 
@@ -1113,4 +1208,6 @@ void brpoplpushCommand(redisClient *c) {
             rpoplpushCommand(c);
         }
     }
+    unlockKeys(c, keys, 2);
+    zfree(keys);
 }
