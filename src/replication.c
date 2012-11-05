@@ -78,7 +78,9 @@ void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **
     listRewind(monitors,&li);
     while((ln = listNext(&li))) {
         redisClient *monitor = ln->value;
+        pthread_mutex_lock(monitor->lock);
         addReply(monitor,cmdobj);
+        pthread_mutex_unlock(monitor->lock);
     }
     decrRefCount(cmdobj);
 }
@@ -114,6 +116,7 @@ void syncCommand(redisClient *c) {
         listNode *ln;
         listIter li;
 
+        pthread_mutex_lock(server.lock);
         listRewind(server.slaves,&li);
         while((ln = listNext(&li))) {
             slave = ln->value;
@@ -131,6 +134,7 @@ void syncCommand(redisClient *c) {
             c->replstate = REDIS_REPL_WAIT_BGSAVE_START;
             redisLog(REDIS_NOTICE,"Waiting for next BGSAVE for SYNC");
         }
+        pthread_mutex_unlock(server.lock);
     } else {
         /* Ok we don't have a BGSAVE in progress, let's start one */
         redisLog(REDIS_NOTICE,"Starting BGSAVE for SYNC");
@@ -665,6 +669,7 @@ void undoConnectWithMaster(void) {
 void slaveofCommand(redisClient *c) {
     if (!strcasecmp(c->argv[1]->ptr,"no") &&
         !strcasecmp(c->argv[2]->ptr,"one")) {
+        pthread_mutex_lock(server.lock);
         if (server.masterhost) {
             sdsfree(server.masterhost);
             server.masterhost = NULL;
@@ -677,6 +682,7 @@ void slaveofCommand(redisClient *c) {
             server.repl_state = REDIS_REPL_NONE;
             redisLog(REDIS_NOTICE,"MASTER MODE enabled (user request)");
         }
+        pthread_mutex_unlock(server.lock);
     } else {
         long port;
 
@@ -692,6 +698,7 @@ void slaveofCommand(redisClient *c) {
         }
         /* There was no previous master or the user specified a different one,
          * we can continue. */
+        pthread_mutex_lock(server.lock);
         sdsfree(server.masterhost);
         server.masterhost = sdsdup(c->argv[1]->ptr);
         server.masterport = port;
@@ -702,6 +709,7 @@ void slaveofCommand(redisClient *c) {
         server.repl_state = REDIS_REPL_CONNECT;
         redisLog(REDIS_NOTICE,"SLAVE OF %s:%d enabled (user request)",
             server.masterhost, server.masterport);
+        pthread_mutex_unlock(server.lock);
     }
     addReply(c,shared.ok);
 }

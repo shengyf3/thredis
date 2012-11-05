@@ -107,12 +107,16 @@ int dbExists(redisDb *db, robj *key) {
 robj *dbRandomKey(redisDb *db) {
     struct dictEntry *de;
 
+    pthread_mutex_lock(db->lock);
     while(1) {
         sds key;
         robj *keyobj;
 
         de = dictGetRandomKey(db->dict);
-        if (de == NULL) return NULL;
+        if (de == NULL) {
+            pthread_mutex_unlock(db->lock);
+            return NULL;
+        }
 
         key = dictGetKey(de);
         keyobj = createStringObject(key,sdslen(key));
@@ -122,6 +126,7 @@ robj *dbRandomKey(redisDb *db) {
                 continue; /* search for another key. This expired. */
             }
         }
+        pthread_mutex_unlock(db->lock);
         return keyobj;
     }
 }
@@ -182,13 +187,16 @@ void signalFlushedDb(int dbid) {
 void flushdbCommand(redisClient *c) {
     server.dirty += dictSize(c->db->dict);
     signalFlushedDb(c->db->id);
+    pthread_mutex_lock(c->db->lock);
     dictEmpty(c->db->dict);
     dictEmpty(c->db->expires);
     addReply(c,shared.ok);
+    pthread_mutex_unlock(c->db->lock);
 }
 
 void flushallCommand(redisClient *c) {
     signalFlushedDb(-1);
+    pthread_mutex_lock(server.lock);
     server.dirty += emptyDb();
     addReply(c,shared.ok);
     if (server.rdb_child_pid != -1) {
@@ -203,10 +211,17 @@ void flushallCommand(redisClient *c) {
         server.dirty = saved_dirty;
     }
     server.dirty++;
+    pthread_mutex_unlock(server.lock);
 }
 
 void delCommand(redisClient *c) {
     int deleted = 0, j;
+    robj **keys;
+
+    keys = zmalloc(sizeof(robj *) * (c->argc - 1));
+    for (j = 1; j < c->argc; j++)
+        keys[j-1] = c->argv[j];
+    lockKeys(c, keys, c->argc - 1);
 
     for (j = 1; j < c->argc; j++) {
         if (dbDelete(c->db,c->argv[j])) {
@@ -216,6 +231,8 @@ void delCommand(redisClient *c) {
         }
     }
     addReplyLongLong(c,deleted);
+    unlockKeys(c, keys, c->argc - 1);
+    zfree(keys);
 }
 
 void existsCommand(redisClient *c) {
@@ -265,6 +282,7 @@ void keysCommand(redisClient *c) {
     unsigned long numkeys = 0;
     void *replylen = addDeferredMultiBulkLength(c);
 
+    pthread_mutex_lock(c->db->lock);
     di = dictGetSafeIterator(c->db->dict);
     allkeys = (pattern[0] == '*' && pattern[1] == '\0');
     while((de = dictNext(di)) != NULL) {
@@ -282,6 +300,7 @@ void keysCommand(redisClient *c) {
     }
     dictReleaseIterator(di);
     setDeferredMultiBulkLength(c,replylen,numkeys);
+    pthread_mutex_unlock(c->db->lock);
 }
 
 void dbsizeCommand(redisClient *c) {
@@ -289,13 +308,16 @@ void dbsizeCommand(redisClient *c) {
 }
 
 void lastsaveCommand(redisClient *c) {
+    pthread_mutex_lock(server.lock);
     addReplyLongLong(c,server.lastsave);
+    pthread_mutex_unlock(server.lock);
 }
 
 void typeCommand(redisClient *c) {
     robj *o;
     char *type;
 
+    lockKey(c,c->argv[1]);
     o = lookupKeyRead(c->db,c->argv[1]);
     if (o == NULL) {
         type = "none";
@@ -310,6 +332,7 @@ void typeCommand(redisClient *c) {
         }
     }
     addReplyStatus(c,type);
+    unlockKey(c,c->argv[1]);
 }
 
 void shutdownCommand(redisClient *c) {
@@ -328,13 +351,16 @@ void shutdownCommand(redisClient *c) {
             return;
         }
     }
+    pthread_mutex_lock(server.lock);
     if (prepareForShutdown(flags) == REDIS_OK) exit(0);
+    pthread_mutex_unlock(server.lock);
     addReplyError(c,"Errors trying to SHUTDOWN. Check logs.");
 }
 
 void renameGenericCommand(redisClient *c, int nx) {
     robj *o;
     long long expire;
+    robj **keys;
 
     /* To use the same key as src and dst is probably an error */
     if (sdscmp(c->argv[1]->ptr,c->argv[2]->ptr) == 0) {
@@ -342,8 +368,16 @@ void renameGenericCommand(redisClient *c, int nx) {
         return;
     }
 
-    if ((o = lookupKeyWriteOrReply(c,c->argv[1],shared.nokeyerr)) == NULL)
+    keys = zmalloc(sizeof(robj *)*2);
+    keys[0] = c->argv[1];
+    keys[1] = c->argv[2];
+    lockKeys(c,keys,2);
+
+    if ((o = lookupKeyWriteOrReply(c,c->argv[1],shared.nokeyerr)) == NULL) {
+        unlockKeys(c,keys,2);
+        zfree(keys);
         return;
+    }
 
     incrRefCount(o);
     expire = getExpire(c->db,c->argv[1]);
@@ -351,6 +385,8 @@ void renameGenericCommand(redisClient *c, int nx) {
         if (nx) {
             decrRefCount(o);
             addReply(c,shared.czero);
+            unlockKeys(c,keys,2);
+            zfree(keys);
             return;
         }
         /* Overwrite: delete the old key before creating the new one with the same name. */
@@ -363,6 +399,8 @@ void renameGenericCommand(redisClient *c, int nx) {
     signalModifiedKey(c->db,c->argv[2]);
     server.dirty++;
     addReply(c,nx ? shared.cone : shared.ok);
+    unlockKeys(c,keys,2);
+    zfree(keys);
 }
 
 void renameCommand(redisClient *c) {
@@ -393,10 +431,15 @@ void moveCommand(redisClient *c) {
     dst = c->db;
     selectDb(c,srcid); /* Back to the source DB */
 
+    pthread_mutex_lock(src->lock);
+    pthread_mutex_lock(dst->lock);
+
     /* If the user is moving using as target the same
      * DB as the source DB it is probably an error. */
     if (src == dst) {
         addReply(c,shared.sameobjecterr);
+        pthread_mutex_unlock(dst->lock);
+        pthread_mutex_unlock(src->lock);
         return;
     }
 
@@ -404,12 +447,16 @@ void moveCommand(redisClient *c) {
     o = lookupKeyWrite(c->db,c->argv[1]);
     if (!o) {
         addReply(c,shared.czero);
+        pthread_mutex_unlock(dst->lock);
+        pthread_mutex_unlock(src->lock);
         return;
     }
 
     /* Return zero if the key already exists in the target DB */
     if (lookupKeyWrite(dst,c->argv[1]) != NULL) {
         addReply(c,shared.czero);
+        pthread_mutex_unlock(dst->lock);
+        pthread_mutex_unlock(src->lock);
         return;
     }
     dbAdd(dst,c->argv[1],o);
@@ -419,6 +466,8 @@ void moveCommand(redisClient *c) {
     dbDelete(src,c->argv[1]);
     server.dirty++;
     addReply(c,shared.cone);
+    pthread_mutex_unlock(dst->lock);
+    pthread_mutex_unlock(src->lock);
 }
 
 /*-----------------------------------------------------------------------------
@@ -483,7 +532,17 @@ void propagateExpire(redisDb *db, robj *key) {
 }
 
 int expireIfNeeded(redisDb *db, robj *key) {
-    long long when = getExpire(db,key);
+    long long when;
+
+    /* THREDIS TODO - this is a problem because if we are holding the
+     * lock and the key is expired, it would not be expired here. To
+     * work around this we'd need to pass the client here to be able
+     * to compare it, or something else... */
+
+    if (dictFind(db->locked_keys, key->ptr))
+        return 0; /* do not expire locked keys */
+
+    when = getExpire(db,key);
 
     if (when < 0) return 0; /* No expire for this key */
 
@@ -532,9 +591,11 @@ void expireGenericCommand(redisClient *c, long long basetime, int unit) {
     if (unit == UNIT_SECONDS) when *= 1000;
     when += basetime;
 
+    lockKey(c,key);
     de = dictFind(c->db->dict,key->ptr);
     if (de == NULL) {
         addReply(c,shared.czero);
+        unlockKey(c,key);
         return;
     }
     /* EXPIRE with negative TTL, or EXPIREAT with a timestamp into the past
@@ -555,14 +616,13 @@ void expireGenericCommand(redisClient *c, long long basetime, int unit) {
         decrRefCount(aux);
         signalModifiedKey(c->db,key);
         addReply(c, shared.cone);
-        return;
     } else {
         setExpire(c->db,key,when);
         addReply(c,shared.cone);
         signalModifiedKey(c->db,key);
         server.dirty++;
-        return;
     }
+    unlockKey(c,key);
 }
 
 void expireCommand(redisClient *c) {
@@ -584,6 +644,7 @@ void pexpireatCommand(redisClient *c) {
 void ttlGenericCommand(redisClient *c, int output_ms) {
     long long expire, ttl = -1;
 
+    lockKey(c,c->argv[1]);
     expire = getExpire(c->db,c->argv[1]);
     if (expire != -1) {
         ttl = expire-mstime();
@@ -594,6 +655,7 @@ void ttlGenericCommand(redisClient *c, int output_ms) {
     } else {
         addReplyLongLong(c,output_ms ? ttl : ((ttl+500)/1000));
     }
+    unlockKey(c,c->argv[1]);
 }
 
 void ttlCommand(redisClient *c) {
@@ -607,6 +669,7 @@ void pttlCommand(redisClient *c) {
 void persistCommand(redisClient *c) {
     dictEntry *de;
 
+    lockKey(c,c->argv[1]);
     de = dictFind(c->db->dict,c->argv[1]->ptr);
     if (de == NULL) {
         addReply(c,shared.czero);
@@ -618,6 +681,7 @@ void persistCommand(redisClient *c) {
             addReply(c,shared.czero);
         }
     }
+    unlockKey(c,c->argv[1]);
 }
 
 /* -----------------------------------------------------------------------------

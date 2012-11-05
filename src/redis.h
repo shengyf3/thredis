@@ -23,6 +23,7 @@
 #include <signal.h>
 
 #include "ae.h"      /* Event driven programming library */
+#include "threadpool.h"
 #include "sds.h"     /* Dynamic safe strings */
 #include "dict.h"    /* Hash tables */
 #include "adlist.h"  /* Linked lists */
@@ -36,6 +37,7 @@
 /* Error codes */
 #define REDIS_OK                0
 #define REDIS_ERR               -1
+#define REDIS_ADDED_TO_THREAD   1
 
 /* Static server configuration */
 #define REDIS_HZ                100     /* Time interrupt calls/sec. */
@@ -304,6 +306,8 @@ typedef struct redisDb {
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP) */
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+    dict *locked_keys;          /* Locked keys */
+    pthread_mutex_t *lock;
     int id;
 } redisDb;
 
@@ -384,6 +388,14 @@ typedef struct redisClient {
     /* Response buffer */
     int bufpos;
     char buf[REDIS_REPLY_CHUNK_BYTES];
+
+    pthread_mutex_t *lock;
+    int refcount;
+    int busy;
+    struct redisClient *lua_client;   /* The "fake client" to query Redis from Lua */
+    lua_State *lua;   /* The Lua interpreter for this client */
+    long long lua_time_start;  /* Start time of script */
+    int lua_kill;         /* Kill the script if true. */
 } redisClient;
 
 struct saveparam {
@@ -746,25 +758,17 @@ struct redisServer {
     int cluster_enabled;    /* Is cluster enabled? */
     clusterState cluster;   /* State of the cluster */
     /* Scripting */
-    lua_State *lua; /* The Lua interpreter. We use just one for all clients */
-    redisClient *lua_client;   /* The "fake client" to query Redis from Lua */
-    redisClient *lua_caller;   /* The client running EVAL right now, or NULL */
     dict *lua_scripts;         /* A dictionary of SHA1 -> Lua scripts */
     long long lua_time_limit;  /* Script timeout in seconds */
-    long long lua_time_start;  /* Start time of script */
-    int lua_write_dirty;  /* True if a write command was called during the
-                             execution of the current script. */
-    int lua_random_dirty; /* True if a random command was called during the
-                             execution of the current script. */
-    int lua_timedout;     /* True if we reached the time limit for script
-                             execution. */
-    int lua_kill;         /* Kill the script if true. */
     /* Assert & bug reportign */
     char *assert_failed;
     char *assert_file;
     int assert_line;
     int bug_report_start; /* True if bug report header was already logged. */
     int watchdog_period;  /* Software watchdog period in ms. 0 = off */
+
+    threadpool_t *tpool;
+    pthread_mutex_t *lock;   /* only used for blocking BL* command stuff */
 };
 
 typedef struct pubsubPattern {
@@ -886,7 +890,8 @@ void addReplySds(redisClient *c, sds s);
 void processInputBuffer(redisClient *c);
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask);
+void clientReadHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void readQueryFromClient(redisClient *c);
 void addReplyBulk(redisClient *c, robj *obj);
 void addReplyBulkCString(redisClient *c, char *s);
 void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
@@ -1153,11 +1158,19 @@ void sentinelTimer(void);
 char *sentinelHandleConfiguration(char **argv, int argc);
 
 /* Scripting */
-void scriptingInit(void);
+void scriptingInit(redisClient *c);
+void scriptingRelease(redisClient *c);
 
 /* Git SHA1 */
 char *redisGitSHA1(void);
 char *redisGitDirty(void);
+
+/* Locking */
+void lockKey(redisClient *c, robj *key);
+int genericLockKey(redisClient *c, robj *key, int trylock);
+void unlockKey(redisClient *c, robj *key);
+void lockKeys(redisClient *c, robj **keys, int n_keys);
+void unlockKeys(redisClient *c, robj **keys, int n_keys);
 
 /* Commands prototypes */
 void authCommand(redisClient *c);

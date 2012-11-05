@@ -175,12 +175,14 @@ void watchForKey(redisClient *c, robj *key) {
             return; /* Key already watched */
     }
     /* This key is not already watched in this DB. Let's add it */
+    pthread_mutex_lock(c->db->lock);
     clients = dictFetchValue(c->db->watched_keys,key);
     if (!clients) { 
         clients = listCreate();
         dictAdd(c->db->watched_keys,key,clients);
         incrRefCount(key);
     }
+    pthread_mutex_unlock(c->db->lock);
     listAddNodeTail(clients,c);
     /* Add the new key to the lits of keys watched by this client */
     wk = zmalloc(sizeof(*wk));
@@ -205,12 +207,14 @@ void unwatchAllKeys(redisClient *c) {
         /* Lookup the watched key -> clients list and remove the client
          * from the list */
         wk = listNodeValue(ln);
+        pthread_mutex_lock(wk->db->lock);
         clients = dictFetchValue(wk->db->watched_keys, wk->key);
         redisAssertWithInfo(c,NULL,clients != NULL);
         listDelNode(clients,listSearchKey(clients,c));
         /* Kill the entry at all if this was the only client */
         if (listLength(clients) == 0)
             dictDelete(wk->db->watched_keys, wk->key);
+        pthread_mutex_unlock(wk->db->lock);
         /* Remove this watched key from the client->watched list */
         listDelNode(c->watched_keys,ln);
         decrRefCount(wk->key);
@@ -259,8 +263,10 @@ void touchWatchedKeysOnFlush(int dbid) {
              * key exists, mark the client as dirty, as the key will be
              * removed. */
             if (dbid == -1 || wk->db->id == dbid) {
+                pthread_mutex_lock(wk->db->lock);
                 if (dictFind(wk->db->dict, wk->key->ptr) != NULL)
                     c->flags |= REDIS_DIRTY_CAS;
+                pthread_mutex_unlock(wk->db->lock);
             }
         }
     }

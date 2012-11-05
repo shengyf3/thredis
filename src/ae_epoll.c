@@ -39,6 +39,7 @@ static void aeApiFree(aeEventLoop *eventLoop) {
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee;
+
     /* If the fd was already monitored for some event, we need a MOD
      * operation. Otherwise we need an ADD operation. */
     int op = eventLoop->events[fd].mask == AE_NONE ?
@@ -87,10 +88,15 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             int mask = 0;
             struct epoll_event *e = state->events+j;
 
-            if (e->events & EPOLLIN) mask |= AE_READABLE;
-            if (e->events & EPOLLOUT) mask |= AE_WRITABLE;
-            if (e->events & EPOLLERR) mask |= AE_WRITABLE;
-            if (e->events & EPOLLHUP) mask |= AE_WRITABLE;
+            if (e->events & EPOLLIN)
+                mask |= AE_READABLE;
+            if (e->events & EPOLLOUT)
+                mask |= AE_WRITABLE;
+            if (e->events & EPOLLERR)
+                mask |= AE_WRITABLE;
+            if (e->events & EPOLLHUP)
+                mask |= AE_WRITABLE;
+
             eventLoop->fired[j].fd = e->data.fd;
             eventLoop->fired[j].mask = mask;
         }

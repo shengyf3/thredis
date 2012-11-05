@@ -137,13 +137,13 @@ start_server {tags {"scripting"}} {
         set e
     } {*not allowed*}
 
-    test {EVAL - Scripts can't run certain commands} {
-        set e {}
-        catch {
-            r eval "redis.pcall('randomkey'); return redis.pcall('set','x','ciao')" 0
-        } e
-        set e
-    } {*not allowed after*}
+    # test {EVAL - Scripts can't run certain commands} {
+    #     set e {}
+    #     catch {
+    #         r eval "redis.pcall('randomkey'); return redis.pcall('set','x','ciao')" 0
+    #     } e
+    #     set e
+    # } {*not allowed after*}
 
     test {EVAL - No arguments to redis.call/pcall is considered an error} {
         set e {}
@@ -282,34 +282,36 @@ start_server {tags {"scripting"}} {
 # Start a new server since the last test in this stanza will kill the
 # instance at all.
 start_server {tags {"scripting"}} {
-    test {Timedout read-only scripts can be killed by SCRIPT KILL} {
-        set rd [redis_deferring_client]
-        r config set lua-time-limit 10
-        $rd eval {while true do end} 0
-        after 200
-        catch {r ping} e
-        assert_match {BUSY*} $e
-        r script kill
-        assert_equal [r ping] "PONG"
-    }
+    # in thredis timedout scripts simply die - no need to kill them
+    # test {Timedout read-only scripts can be killed by SCRIPT KILL} {
+    #     set rd [redis_deferring_client]
+    #     r config set lua-time-limit 10
+    #     $rd eval {while true do end} 0
+    #     after 200
+    #     catch {r ping} e
+    #     assert_match {BUSY*} $e
+    #     r script kill
+    #     assert_equal [r ping] "PONG"
+    # }
 
-    test {Timedout scripts that modified data can't be killed by SCRIPT KILL} {
-        set rd [redis_deferring_client]
-        r config set lua-time-limit 10
-        $rd eval {redis.call('set','x','y'); while true do end} 0
-        after 200
-        catch {r ping} e
-        assert_match {BUSY*} $e
-        catch {r script kill} e
-        assert_match {UNKILLABLE*} $e
-        catch {r ping} e
-        assert_match {BUSY*} $e
-    }
+    # there is no such restriction in thredis since it isn't deterministic to begin with
+    # test {Timedout scripts that modified data can't be killed by SCRIPT KILL} {
+    #     set rd [redis_deferring_client]
+    #     r config set lua-time-limit 10
+    #     $rd eval {redis.call('set','x','y'); while true do end} 0
+    #     after 200
+    #     catch {r ping} e
+    #     assert_match {BUSY*} $e
+    #     catch {r script kill} e
+    #     assert_match {ERR*} $e
+    #     catch {r ping} e
+    #     assert_match {BUSY*} $e
+    # }
 
     test {SHUTDOWN NOSAVE can kill a timedout script anyway} {
         # The server sould be still unresponding to normal commands.
-        catch {r ping} e
-        assert_match {BUSY*} $e
+#        catch {r ping} e
+#        assert_match {BUSY*} $e
         catch {r shutdown nosave}
         # Make sure the server was killed
         catch {set rd [redis_deferring_client]} e

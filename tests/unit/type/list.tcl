@@ -164,7 +164,6 @@ start_server {
     test "BLPOP, LPUSH + DEL should not awake blocked client" {
         set rd [redis_deferring_client]
         r del list
-
         $rd blpop list 0
         r multi
         r lpush list a
@@ -374,6 +373,8 @@ start_server {
         $watching_client get somekey
         $watching_client read
         $watching_client exec
+        # in thredis the above exec is a separate thread, let it finish
+        after 100
         # Blocked BLPOPLPUSH may create problems, unblock it.
         r lpush srclist element
         $watching_client read

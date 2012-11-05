@@ -1523,6 +1523,8 @@ void dumpCommand(redisClient *c) {
     robj *o, *dumpobj;
     rio payload;
 
+    lockKey(c,c->argv[1]);
+
     /* Check if the key is here. */
     if ((o = lookupKeyRead(c->db,c->argv[1])) == NULL) {
         addReply(c,shared.nullbulk);
@@ -1536,6 +1538,8 @@ void dumpCommand(redisClient *c) {
     dumpobj = createObject(REDIS_STRING,payload.io.buffer.ptr);
     addReplyBulk(c,dumpobj);
     decrRefCount(dumpobj);
+
+    unlockKey(c,c->argv[1]);
     return;
 }
 
@@ -1546,23 +1550,29 @@ void restoreCommand(redisClient *c) {
     int type;
     robj *obj;
 
+    lockKey(c,c->argv[1]);
+
     /* Make sure this key does not already exist here... */
     if (lookupKeyWrite(c->db,c->argv[1]) != NULL) {
         addReplyError(c,"Target key name is busy.");
+        unlockKey(c,c->argv[1]);
         return;
     }
 
     /* Check if the TTL value makes sense */
     if (getLongFromObjectOrReply(c,c->argv[2],&ttl,NULL) != REDIS_OK) {
+        unlockKey(c,c->argv[1]);
         return;
     } else if (ttl < 0) {
         addReplyError(c,"Invalid TTL value, must be >= 0");
+        unlockKey(c,c->argv[1]);
         return;
     }
 
     /* Verify RDB version and data checksum. */
     if (verifyDumpPayload(c->argv[3]->ptr,sdslen(c->argv[3]->ptr)) == REDIS_ERR) {
         addReplyError(c,"DUMP payload version or checksum are wrong");
+        unlockKey(c,c->argv[1]);
         return;
     }
 
@@ -1571,6 +1581,7 @@ void restoreCommand(redisClient *c) {
         ((obj = rdbLoadObject(type,&payload)) == NULL))
     {
         addReplyError(c,"Bad data format");
+        unlockKey(c,c->argv[1]);
         return;
     }
 
@@ -1580,6 +1591,7 @@ void restoreCommand(redisClient *c) {
     signalModifiedKey(c->db,c->argv[1]);
     addReply(c,shared.ok);
     server.dirty++;
+    unlockKey(c,c->argv[1]);
 }
 
 /* MIGRATE host port key dbid timeout */
@@ -1588,7 +1600,7 @@ void migrateCommand(redisClient *c) {
     long timeout;
     long dbid;
     long long ttl = 0, expireat;
-    robj *o;
+    robj *o, *key;
     rio cmd, payload;
 
     /* Sanity check */
@@ -1598,11 +1610,15 @@ void migrateCommand(redisClient *c) {
         return;
     if (timeout <= 0) timeout = 1;
 
+    key = createStringObject(sdsdup(c->argv[3]->ptr), sdslen(c->argv[3]->ptr));
+    lockKey(c,key);
     /* Check if the key is here. If not we reply with success as there is
      * nothing to migrate (for instance the key expired in the meantime), but
      * we include such information in the reply string. */
     if ((o = lookupKeyRead(c->db,c->argv[3])) == NULL) {
         addReplySds(c,sdsnew("+NOKEY\r\n"));
+        unlockKey(c,key);
+        decrRefCount(key);
         return;
     }
     
@@ -1612,10 +1628,14 @@ void migrateCommand(redisClient *c) {
     if (fd == -1) {
         addReplyErrorFormat(c,"Can't connect to target node: %s",
             server.neterr);
+        unlockKey(c,key);
+        decrRefCount(key);
         return;
     }
     if ((aeWait(fd,AE_WRITABLE,timeout*1000) & AE_WRITABLE) == 0) {
         addReplySds(c,sdsnew("-IOERR error or timeout connecting to the client\r\n"));
+        unlockKey(c,key);
+        decrRefCount(key);
         return;
     }
 
@@ -1687,18 +1707,24 @@ void migrateCommand(redisClient *c) {
 
     sdsfree(cmd.io.buffer.ptr);
     close(fd);
+    unlockKey(c,key);
+    decrRefCount(key);
     return;
 
 socket_wr_err:
     addReplySds(c,sdsnew("-IOERR error or timeout writing to target instance\r\n"));
     sdsfree(cmd.io.buffer.ptr);
     close(fd);
+    unlockKey(c,key);
+    decrRefCount(key);
     return;
 
 socket_rd_err:
     addReplySds(c,sdsnew("-IOERR error or timeout reading from target node\r\n"));
     sdsfree(cmd.io.buffer.ptr);
     close(fd);
+    unlockKey(c,key);
+    decrRefCount(key);
     return;
 }
 
