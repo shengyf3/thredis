@@ -2484,11 +2484,12 @@ int genericLockKey(redisClient *c, robj *key, int trylock) {
   } else {
       pthread_mutex_t *lock = dictGetVal(de);
       
-      /* we have to unlock this before locking c-lock to avoid deadlock */
-      pthread_mutex_unlock(c->db->lock);
-
-      if (lock == c->lock)
+      if (lock == c->lock) {
+          /* we are already holding this lock */
+          pthread_mutex_unlock(c->db->lock);
           return 0;
+      } else
+          pthread_mutex_unlock(c->db->lock);
 
       if (trylock) {
           struct timespec   ts;
@@ -2509,7 +2510,9 @@ int genericLockKey(redisClient *c, robj *key, int trylock) {
 }
 
 void unlockKey(redisClient *c, robj *key) {
-  dictDelete(c->db->locked_keys, key->ptr);
+    pthread_mutex_lock(c->db->lock);
+    dictDelete(c->db->locked_keys, key->ptr);
+    pthread_mutex_unlock(c->db->lock);
 }
 
 /* =================================== Main! ================================ */
