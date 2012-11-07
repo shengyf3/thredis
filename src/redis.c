@@ -2502,9 +2502,11 @@ int genericLockKey(redisClient *c, robj *key, int trylock) {
               return 1;
       } else
           pthread_mutex_lock(lock);
-    
-    dictReplace(c->db->locked_keys, sdsdup(key->ptr), c->lock);
-    pthread_mutex_unlock(lock);
+
+      pthread_mutex_lock(c->db->lock);
+      dictReplace(c->db->locked_keys, sdsdup(key->ptr), c->lock);
+      pthread_mutex_unlock(c->db->lock);
+      pthread_mutex_unlock(lock);
   }
   return 0;
 }

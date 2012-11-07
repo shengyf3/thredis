@@ -58,7 +58,9 @@ robj *lookupKey(redisDb *db, robj *key) {
 robj *lookupKeyRead(redisDb *db, robj *key) {
     robj *val;
 
+    pthread_mutex_lock(db->lock);
     expireIfNeeded(db,key);
+    pthread_mutex_unlock(db->lock);
     val = lookupKey(db,key);
     if (val == NULL)
         server.stat_keyspace_misses++;
@@ -68,7 +70,9 @@ robj *lookupKeyRead(redisDb *db, robj *key) {
 }
 
 robj *lookupKeyWrite(redisDb *db, robj *key) {
+    pthread_mutex_lock(db->lock);
     expireIfNeeded(db,key);
+    pthread_mutex_unlock(db->lock);
     return lookupKey(db,key);
 }
 
@@ -263,7 +267,9 @@ void delCommand(redisClient *c) {
 }
 
 void existsCommand(redisClient *c) {
+    pthread_mutex_lock(c->db->lock);
     expireIfNeeded(c->db,c->argv[1]);
+    pthread_mutex_unlock(c->db->lock);
     if (dbExists(c->db,c->argv[1])) {
         addReply(c, shared.cone);
     } else {
@@ -449,32 +455,37 @@ void moveCommand(redisClient *c) {
     dst = c->db;
     selectDb(c,srcid); /* Back to the source DB */
 
-    pthread_mutex_lock(src->lock);
-    pthread_mutex_lock(dst->lock);
-
     /* If the user is moving using as target the same
      * DB as the source DB it is probably an error. */
     if (src == dst) {
         addReply(c,shared.sameobjecterr);
-        pthread_mutex_unlock(dst->lock);
-        pthread_mutex_unlock(src->lock);
         return;
     }
+
+    /* repeat the db switcheroo so we can lock the keys */
+    lockKey(c,c->argv[1]); /* src */
+    selectDb(c,atoi(c->argv[2]->ptr));
+    lockKey(c,c->argv[1]); /* dst */
+    selectDb(c,srcid);
 
     /* Check if the element exists and get a reference */
     o = lookupKeyWrite(c->db,c->argv[1]);
     if (!o) {
         addReply(c,shared.czero);
-        pthread_mutex_unlock(dst->lock);
-        pthread_mutex_unlock(src->lock);
+        selectDb(c,atoi(c->argv[2]->ptr));
+        unlockKey(c,c->argv[1]); /* dst */
+        selectDb(c,srcid);
+        unlockKey(c,c->argv[1]); /* src */
         return;
     }
 
     /* Return zero if the key already exists in the target DB */
     if (lookupKeyWrite(dst,c->argv[1]) != NULL) {
         addReply(c,shared.czero);
-        pthread_mutex_unlock(dst->lock);
-        pthread_mutex_unlock(src->lock);
+        selectDb(c,atoi(c->argv[2]->ptr));
+        unlockKey(c,c->argv[1]); /* dst */
+        selectDb(c,srcid);
+        unlockKey(c,c->argv[1]); /* src */
         return;
     }
     dbAdd(dst,c->argv[1],o);
@@ -484,8 +495,10 @@ void moveCommand(redisClient *c) {
     dbDelete(src,c->argv[1]);
     server.dirty++;
     addReply(c,shared.cone);
-    pthread_mutex_unlock(dst->lock);
-    pthread_mutex_unlock(src->lock);
+    selectDb(c,atoi(c->argv[2]->ptr));
+    unlockKey(c,c->argv[1]); /* dst */
+    selectDb(c,srcid);
+    unlockKey(c,c->argv[1]); /* src */
 }
 
 /*-----------------------------------------------------------------------------
@@ -551,14 +564,6 @@ void propagateExpire(redisDb *db, robj *key) {
 
 int expireIfNeeded(redisDb *db, robj *key) {
     long long when;
-
-    /* THREDIS TODO - this is a problem because if we are holding the
-     * lock and the key is expired, it would not be expired here. To
-     * work around this we'd need to pass the client here to be able
-     * to compare it, or something else... */
-
-    if (dictFind(db->locked_keys, key->ptr))
-        return 0; /* do not expire locked keys */
 
     when = getExpire(db,key);
 
