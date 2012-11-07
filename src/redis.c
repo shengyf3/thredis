@@ -1256,8 +1256,14 @@ void adjustOpenFilesLimit(void) {
     }
 }
 
+/* Attempt to figure out the number of CPU's on this system */
+int getNumCPUs() {
+    return sysconf(_SC_NPROCESSORS_ONLN);
+}
+
 void initServer() {
     int j;
+    int numcpu;
 
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
@@ -1358,7 +1364,10 @@ void initServer() {
         }
     }
 
-    server.tpool = threadpool_create(16, 1024, 0); // THREDIS TODO - this should be configurable
+    if ((numcpu = getNumCPUs()) <= 0)
+        numcpu = REDIS_THREADPOOL_DEFAULT_SIZE;
+    redisLog(REDIS_NOTICE,"Starting %d worker threads with a threadpool queue of size %d.", numcpu, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE);
+    server.tpool = threadpool_create(numcpu, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE, 0); // THREDIS TODO - this should be configurable
     server.lock = zmalloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(server.lock, NULL);
 

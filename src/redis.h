@@ -290,6 +290,10 @@
 #define REDIS_PROPAGATE_AOF 1
 #define REDIS_PROPAGATE_REPL 2
 
+/* Threads */
+#define REDIS_THREADPOOL_DEFAULT_SIZE 4
+#define REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE 1024
+
 /* Using the following macro you can run code inside serverCron() with the
  * specified period, specified in milliseconds.
  * The actual resolution depends on REDIS_HZ. */
