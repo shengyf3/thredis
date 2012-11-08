@@ -1,0 +1,38 @@
+
+Thredis
+-------
+
+Thredis is threaded Redis. (Apparently "thredis" is also "ribbons" in
+Scots). At this point it is work-in-progress ALPHA quality, probably
+contains many bugs and in need of much improvement, but should be
+sufficient as proof-of-concept to toy around with. Use at your own
+risk.
+
+Problem
+
+If you're using Redis for complex operations (such as big ZUNION
+operations), the server can block for a long time and only uses one
+core. It would be nice if other operations could take place
+concurrently, using many cores.
+
+Solution
+
+Certain commands (the ones that are obviously O(N) or more) are
+submited to their own threads.
+
+How / implications
+
+Clearly this requires locking. The total number of locks required is
+equal to the number of clients + one per every db + a global server
+lock. Every operation requires checking the hash of locked keys, which
+makes everything slower. Also, determinism is impossible with
+concurrency, therefore you should NEVER use Thredis as a master - your
+slaves will have a different database from the master.
+
+Getting started
+
+You probably want start out by trying the thredis-2.6 branch. It is
+based on a stable Redis release.
+
+
+
