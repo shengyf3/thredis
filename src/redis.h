@@ -292,6 +292,7 @@
 
 /* Threads */
 #define REDIS_THREADPOOL_DEFAULT_SIZE 4
+#define REDIS_THREADPOOL_MAX_SIZE 1024
 #define REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE 1024
 
 /* Using the following macro you can run code inside serverCron() with the
@@ -670,6 +671,7 @@ struct redisServer {
     int watchdog_period;  /* Software watchdog period in ms. 0 = off */
 
     threadpool_t *tpool;
+    int threadpool_size;
     pthread_mutex_t *lock;   /* only used for blocking BL* command stuff */
 };
 

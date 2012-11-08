@@ -384,6 +384,15 @@ void loadServerConfigFromString(char *config) {
             }
         } else if (!strcasecmp(argv[0],"slave-priority") && argc == 2) {
             server.slave_priority = atoi(argv[1]);
+        } else if (!strcasecmp(argv[0],"threadpool-size") && argc == 2) {
+            if (!strcasecmp(argv[1], "auto")) {
+                server.threadpool_size = -1;
+            } else {
+                server.threadpool_size = atoi(argv[1]);
+                if ((server.threadpool_size <= 0) || (server.threadpool_size > REDIS_THREADPOOL_MAX_SIZE)) {
+                    err = "Invalid threadpool-size"; goto loaderr;
+                }
+            }
         } else if (!strcasecmp(argv[0],"sentinel")) {
             /* argc == 1 is handled by main() as we need to enter the sentinel
              * mode ASAP. */
@@ -800,6 +809,7 @@ void configGetCommand(redisClient *c) {
     config_get_numerical_field("maxclients",server.maxclients);
     config_get_numerical_field("watchdog-period",server.watchdog_period);
     config_get_numerical_field("slave-priority",server.slave_priority);
+    config_get_numerical_field("threadpool-size",server.threadpool_size);
 
     /* Bool (yes/no) values */
     config_get_bool_field("no-appendfsync-on-rewrite",

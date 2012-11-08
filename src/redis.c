@@ -1153,6 +1153,7 @@ void initServerConfig() {
     server.repl_ping_slave_period = REDIS_REPL_PING_SLAVE_PERIOD;
     server.repl_timeout = REDIS_REPL_TIMEOUT;
     server.lua_time_limit = REDIS_LUA_TIME_LIMIT;
+    server.threadpool_size = -1;
 
     updateLRUClock();
     resetServerSaveParams();
@@ -1264,7 +1265,6 @@ int getNumCPUs() {
 
 void initServer() {
     int j;
-    int numcpu;
 
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
@@ -1365,10 +1365,11 @@ void initServer() {
         }
     }
 
-    if ((numcpu = getNumCPUs()) <= 0)
-        numcpu = REDIS_THREADPOOL_DEFAULT_SIZE;
-    redisLog(REDIS_NOTICE,"Starting %d worker threads with a threadpool queue of size %d.", numcpu, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE);
-    server.tpool = threadpool_create(numcpu, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE, 0); // THREDIS TODO - this should be configurable
+    if (server.threadpool_size == -1)
+        if ((server.threadpool_size = getNumCPUs()) <= 0)
+            server.threadpool_size = REDIS_THREADPOOL_DEFAULT_SIZE;
+    redisLog(REDIS_NOTICE,"Starting %d worker threads with a threadpool queue of size %d.", server.threadpool_size, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE);
+    server.tpool = threadpool_create(server.threadpool_size, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE, 0); // THREDIS TODO - queue size should be configurable
     server.lock = zmalloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(server.lock, NULL);
 
