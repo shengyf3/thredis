@@ -6,6 +6,7 @@ start_server {tags {"introspection"}} {
     test {MONITOR can log executed commands} {
         set rd [redis_deferring_client]
         $rd monitor
+        after 100
         r set foo bar
         r get foo
         list [$rd read] [$rd read] [$rd read]
@@ -14,6 +15,7 @@ start_server {tags {"introspection"}} {
     test {MONITOR can log commands issued by the scripting engine} {
         set rd [redis_deferring_client]
         $rd monitor
+        after 100
         r eval {redis.call('set',KEYS[1],ARGV[1])} 1 foo bar
         $rd read ;# Discard the OK
         assert_match {*eval*} [$rd read]

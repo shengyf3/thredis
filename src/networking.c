@@ -729,7 +729,13 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(mask);
 
-    pthread_mutex_lock(c->lock);
+    /* an addReply* at the beginning of a long-running command,
+     * e.g. EXEC would block here on a writable event, so we use a
+     * trylock here, if it fails, we can always get it next time. */
+
+    if (pthread_mutex_trylock(c->lock))
+        return;
+
     while(c->bufpos > 0 || listLength(c->reply)) {
         if (c->bufpos > 0) {
             if (c->flags & REDIS_MASTER) {
