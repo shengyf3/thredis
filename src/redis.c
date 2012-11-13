@@ -1710,7 +1710,7 @@ int processCommand(redisClient *c) {
             p == linsertCommand || p == lrangeCommand ||
             p == lremCommand || p == lsetCommand ||
             p == ltrimCommand || p == migrateCommand ||
-            p == restoreCommand || p == saddCommand ||
+            p == restoreCommand ||
             p == sdiffCommand || p == sdiffstoreCommand ||
             p == sinterCommand || p == sinterstoreCommand ||
             p == sortCommand || p == sunionCommand ||

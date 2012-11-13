@@ -40,4 +40,28 @@ You probably want start out by trying the thredis-2.6 branch. It is
 based on a stable Redis release.
 
 
+Performance
+-----------
+
+A simple benchmark using redis-benchmark -n 10000 shows that Thredis
+is only slightly slower than Redis. Here is the output of a run
+comparing Redis 2.6 with Thredis 2.6 on the same machine (4-core Linux
+in a VirtualBox on a MacBook Pro):
+                                        Redis        Thredis
+PING_INLINE                             44444.45     45454.55  102.27%
+PING_BULK                               48543.69     45248.87   93.21%
+SET                                     44843.05     41666.67   92.92%
+GET                                     48780.49     44444.45   91.11%
+INCR                                    46948.36     37878.79   80.68%
+LPUSH                                   46296.30     36900.37   79.70%
+LPOP                                    45454.55     40816.33   89.80%
+SADD                                    48309.18     40485.83   83.81%
+SPOP                                    48309.18     40322.58   83.47%
+LPUSH (needed to benchmark LRANGE)      46511.63     41493.78   89.21%
+LRANGE_100 (first 100 elements)         29761.90     23148.15   77.78%
+LRANGE_300 (first 300 elements)         14367.82     13947.00   97.07%
+LRANGE_500 (first 450 elements)         10615.71     10471.20   98.64%
+LRANGE_600 (first 600 elements)         8230.45      8110.30    98.54%
+MSET (10 keys)                          27322.40     21739.13   79.57%
+                                                       AVERAGE: 89.18%
 
