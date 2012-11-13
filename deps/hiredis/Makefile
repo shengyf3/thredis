@@ -89,7 +89,7 @@ check: hiredis-test
 		"port 56379\n" \
 		"bind 127.0.0.1\n" \
 		"unixsocket /tmp/hiredis-test-redis.sock" \
-			| redis-server -
+			| thredis-server -
 	./hiredis-test -h 127.0.0.1 -p 56379 -s /tmp/hiredis-test-redis.sock || \
 			( kill `cat /tmp/hiredis-test-redis.pid` && false )
 	kill `cat /tmp/hiredis-test-redis.pid`

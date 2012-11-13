@@ -57,7 +57,7 @@ if [ ! `echo $REDIS_PORT | egrep "^[0-9]+\$"`  ] ; then
 fi
 
 #read the redis config file
-_REDIS_CONFIG_FILE="/etc/redis/$REDIS_PORT.conf"
+_REDIS_CONFIG_FILE="/etc/thredis/$REDIS_PORT.conf"
 read -p "Please select the redis config file name [$_REDIS_CONFIG_FILE] " REDIS_CONFIG_FILE
 if [ !"$REDIS_CONFIG_FILE" ] ; then
 	REDIS_CONFIG_FILE=$_REDIS_CONFIG_FILE
@@ -85,8 +85,8 @@ fi
 mkdir -p $REDIS_DATA_DIR || die "Could not create redis data directory"
 
 #get the redis executable path
-_REDIS_EXECUTABLE=`which redis-server`
-read -p "Please select the redis executable path [$_REDIS_EXECUTABLE] " REDIS_EXECUTABLE
+_REDIS_EXECUTABLE=`which thredis-server`
+read -p "Please select the thredis executable path [$_REDIS_EXECUTABLE] " REDIS_EXECUTABLE
 if [ ! -f "$REDIS_EXECUTABLE" ] ; then
 	REDIS_EXECUTABLE=$_REDIS_EXECUTABLE
 	
@@ -100,10 +100,10 @@ fi
 
 #render the tmplates
 TMP_FILE="/tmp/$REDIS_PORT.conf"
-DEFAULT_CONFIG="../redis.conf"
+DEFAULT_CONFIG="../thredis.conf"
 INIT_TPL_FILE="./redis_init_script.tpl"
-INIT_SCRIPT_DEST="/etc/init.d/redis_$REDIS_PORT"
-PIDFILE="/var/run/redis_$REDIS_PORT.pid"
+INIT_SCRIPT_DEST="/etc/init.d/thredis_$REDIS_PORT"
+PIDFILE="/var/run/thredis_$REDIS_PORT.pid"
 
 
 

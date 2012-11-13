@@ -4,7 +4,7 @@
 # as it does use of the /proc filesystem.
 
 REDISPORT=6379
-EXEC=/usr/local/bin/redis-server
+EXEC=/usr/local/bin/thredis-server
 CLIEXEC=/usr/local/bin/redis-cli
 
 PIDFILE=/var/run/redis_${REDISPORT}.pid
@@ -16,7 +16,7 @@ case "$1" in
         then
                 echo "$PIDFILE exists, process is already running or crashed"
         else
-                echo "Starting Redis server..."
+                echo "Starting Thredis server..."
                 $EXEC $CONF
         fi
         ;;
@@ -30,7 +30,7 @@ case "$1" in
                 $CLIEXEC -p $REDISPORT shutdown
                 while [ -x /proc/${PID} ]
                 do
-                    echo "Waiting for Redis to shutdown ..."
+                    echo "Waiting for Thredis to shutdown ..."
                     sleep 1
                 done
                 echo "Redis stopped"

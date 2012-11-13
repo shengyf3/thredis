@@ -3,7 +3,7 @@
 #!/bin/bash
 nsamples=1
 sleeptime=0
-pid=$(pidof redis-server)
+pid=$(pidof thredis-server)
 
 for x in $(seq 1 $nsamples)
   do

@@ -1,4 +1,12 @@
 
+What is Thredis?
+----------------
+
+Thredis is Threaded Redis. Thredis is for the most part identical to
+Redis. There are a few differences in how it works inherent from it
+processing requests in parallel. Those differences and more
+information specific to Thredis is outlined in README-THREDIS.
+
 Where to find complete Redis documentation?
 -------------------------------------------
 
@@ -62,27 +70,27 @@ Running Redis
 To run Redis with the default configuration just type:
 
     % cd src
-    % ./redis-server
+    % ./thredis-server
     
-If you want to provide your redis.conf, you have to run it using an additional
+If you want to provide your thredis.conf, you have to run it using an additional
 parameter (the path of the configuration file):
 
     % cd src
-    % ./redis-server /path/to/redis.conf
+    % ./thredis-server /path/to/thredis.conf
 
 It is possible to alter the Redis configuration passing parameters directly
 as options using the command line. Examples:
 
-    % ./redis-server --port 9999 --slaveof 127.0.0.1 6379
-    % ./redis-server /etc/redis/6379.conf --loglevel debug
+    % ./thredis-server --port 9999 --slaveof 127.0.0.1 6379
+    % ./thredis-server /etc/redis/6379.conf --loglevel debug
 
-All the options in redis.conf are also supported as options using the command
+All the options in thredis.conf are also supported as options using the command
 line, with exactly the same name.
 
 Playing with Redis
 ------------------
 
-You can use redis-cli to play with Redis. Start a redis-server instance,
+You can use redis-cli to play with Redis. Start a thredis-server instance,
 then in another terminal try the following:
 
     % cd src

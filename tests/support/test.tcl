@@ -146,7 +146,7 @@ proc test {name code {okpattern undefined}} {
     }
 
     if {$::traceleaks} {
-        set output [exec leaks redis-server]
+        set output [exec leaks thredis-server]
         if {![string match {*0 leaks*} $output]} {
             send_data_packet $::test_server_fd err "Detected a memory leak in test '$name': $output"
         }

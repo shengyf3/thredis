@@ -8,7 +8,7 @@ start_server {tags {"repl"}} {
 
         test {MASTER and SLAVE dataset should be identical after complex ops} {
             createComplexDataset r 10000
-            after 500
+            after 10000
             if {[r debug digest] ne [r -1 debug digest]} {
                 set csv1 [csvdump r]
                 set csv2 [csvdump {r -1}]

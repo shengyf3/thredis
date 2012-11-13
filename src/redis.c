@@ -1193,7 +1193,7 @@ void initServerConfig() {
 
     /* Command table -- we intiialize it here as it is part of the
      * initial configuration, since command names may be changed via
-     * redis.conf using the rename-command directive. */
+     * thredis.conf using the rename-command directive. */
     server.commands = dictCreate(&commandTableDictType,NULL);
     populateCommandTable();
     server.delCommand = lookupCommandByCString("del");
@@ -2589,19 +2589,19 @@ void version() {
 }
 
 void usage() {
-    fprintf(stderr,"Usage: ./redis-server [/path/to/redis.conf] [options]\n");
-    fprintf(stderr,"       ./redis-server - (read config from stdin)\n");
-    fprintf(stderr,"       ./redis-server -v or --version\n");
-    fprintf(stderr,"       ./redis-server -h or --help\n");
-    fprintf(stderr,"       ./redis-server --test-memory <megabytes>\n\n");
+    fprintf(stderr,"Usage: ./thredis-server [/path/to/thredis.conf] [options]\n");
+    fprintf(stderr,"       ./thredis-server - (read config from stdin)\n");
+    fprintf(stderr,"       ./thredis-server -v or --version\n");
+    fprintf(stderr,"       ./thredis-server -h or --help\n");
+    fprintf(stderr,"       ./thredis-server --test-memory <megabytes>\n\n");
     fprintf(stderr,"Examples:\n");
-    fprintf(stderr,"       ./redis-server (run the server with default conf)\n");
-    fprintf(stderr,"       ./redis-server /etc/redis/6379.conf\n");
-    fprintf(stderr,"       ./redis-server --port 7777\n");
-    fprintf(stderr,"       ./redis-server --port 7777 --slaveof 127.0.0.1 8888\n");
-    fprintf(stderr,"       ./redis-server /etc/myredis.conf --loglevel verbose\n\n");
+    fprintf(stderr,"       ./thredis-server (run the server with default conf)\n");
+    fprintf(stderr,"       ./thredis-server /etc/redis/6379.conf\n");
+    fprintf(stderr,"       ./thredis-server --port 7777\n");
+    fprintf(stderr,"       ./thredis-server --port 7777 --slaveof 127.0.0.1 8888\n");
+    fprintf(stderr,"       ./thredis-server /etc/mythredis.conf --loglevel verbose\n\n");
     fprintf(stderr,"Sentinel mode:\n");
-    fprintf(stderr,"       ./redis-server /etc/sentinel.conf --sentinel\n");
+    fprintf(stderr,"       ./thredis-server /etc/sentinel.conf --sentinel\n");
     exit(1);
 }
 
@@ -2725,7 +2725,7 @@ int main(int argc, char **argv) {
                 exit(0);
             } else {
                 fprintf(stderr,"Please specify the amount of memory to test in megabytes.\n");
-                fprintf(stderr,"Example: ./redis-server --test-memory 4096\n\n");
+                fprintf(stderr,"Example: ./thredis-server --test-memory 4096\n\n");
                 exit(1);
             }
         }

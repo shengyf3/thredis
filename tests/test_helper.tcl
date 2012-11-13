@@ -155,7 +155,7 @@ proc s {args} {
 proc cleanup {} {
     if {!$::quiet} {puts -nonewline "Cleanup: may take some time... "}
     flush stdout
-    catch {exec rm -rf {*}[glob tests/tmp/redis.conf.*]}
+    catch {exec rm -rf {*}[glob tests/tmp/thredis.conf.*]}
     catch {exec rm -rf {*}[glob tests/tmp/server.*]}
     if {!$::quiet} {puts "OK"}
 }
