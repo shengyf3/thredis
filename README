@@ -2,10 +2,14 @@
 What is Thredis?
 ----------------
 
-Thredis is Threaded Redis. Thredis is for the most part identical to
-Redis. There are a few differences in how it works inherent from it
-processing requests in parallel. Those differences and more
-information specific to Thredis is outlined in README-THREDIS.
+Thredis is Threaded Redis.  Thredis is ideal for very long-running
+operations, on SMP systems it can easily provide multiples of standard
+Redis performance.
+
+Thredis is for the most part identical to Redis.  There are a few
+differences in how it works inherent from it processing requests in
+parallel. Those differences and more information specific to Thredis
+is outlined in README-THREDIS.
 
 Where to find complete Redis documentation?
 -------------------------------------------

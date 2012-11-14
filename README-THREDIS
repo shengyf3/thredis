@@ -43,10 +43,22 @@ based on a stable Redis release.
 Performance
 -----------
 
-A simple benchmark using redis-benchmark -n 10000 shows that Thredis
-is only slightly slower than Redis. Here is the output of a run
-comparing Redis 2.6 with Thredis 2.6 on the same machine (4-core Linux
-in a VirtualBox on a MacBook Pro):
+The most striking performance gain can be observed on SMP systems when
+running time-consuming operations. In a simple experiement, 20 clients
+running a ZUNIONSTORE operation on 25 Sorted Sets of 100,000 random
+entires took 61.79s on single-threaded Redis versus 6.30s on
+Thredis. This test was conducted on a 24-core server. This is a more
+than 980% (or almost 10x) performance improvement!
+
+For simple O(1) or similar operations Thredis is slightly slower than
+Redis. Simple operations are not submitted to separate threads and run
+in the main event loop, just like Redis, but locking still has to be
+done, which is where most of the slowdown happens.
+
+Here is the output of a redis-benchmark -n 10000 run comparing Redis
+2.6 with Thredis 2.6 on the same machine (4-core Linux in a VirtualBox
+on a MacBook Pro):
+
                                         Redis        Thredis
 PING_INLINE                             44444.45     45454.55  102.27%
 PING_BULK                               48543.69     45248.87   93.21%
