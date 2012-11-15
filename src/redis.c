@@ -1372,6 +1372,7 @@ void initServer() {
     server.tpool = threadpool_create(server.threadpool_size, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE, 0); // THREDIS TODO - queue size should be configurable
     server.lock = zmalloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(server.lock, NULL);
+    server.locking_mode = 0;
 
     /* 32 bit instances are limited to 4GB of address space, so if there is
      * no explicit limit in the user provided configuration we set a limit
@@ -1722,6 +1723,7 @@ int processCommand(redisClient *c) {
 
             c->refcount++;
             threadpool_add(server.tpool, (void (*)(void *)) callCommandAndResetClient, (void *)c, 0);
+            server.locking_mode++;
             return REDIS_ADDED_TO_THREAD;
         } else {
             call(c,REDIS_CALL_FULL);
@@ -2453,6 +2455,8 @@ int _compare_keys(const void *k1, const void *k2) {
 void lockKeys(redisClient *c, robj **keys, int n_keys) {
     int i;
 
+    if (!server.locking_mode) return;
+
     /* keys must be sorted to avoid deadlock */
     qsort(keys, n_keys, sizeof(robj *), _compare_keys);
 
@@ -2475,6 +2479,9 @@ void lockKeys(redisClient *c, robj **keys, int n_keys) {
 
 void unlockKeys(redisClient *c, robj **keys, int n_keys) {
     int i;
+
+    if (!server.locking_mode) return;
+
     /* we assume that the keys have already been sorted in lockKeys! */
     for (i=n_keys-1; i>=0; i--)
         unlockKey(c,keys[i]);
@@ -2486,6 +2493,8 @@ void lockKey(redisClient *c, robj *key) {
 
 int genericLockKey(redisClient *c, robj *key, int trylock) {
   dictEntry *de;
+
+  if (!server.locking_mode) return 0;
 
   pthread_mutex_lock(c->db->lock); 
   de = dictFind(c->db->locked_keys, key->ptr);
@@ -2523,6 +2532,9 @@ int genericLockKey(redisClient *c, robj *key, int trylock) {
 }
 
 void unlockKey(redisClient *c, robj *key) {
+
+    if (!server.locking_mode) return;
+
     pthread_mutex_lock(c->db->lock);
     dictDelete(c->db->locked_keys, key->ptr);
     pthread_mutex_unlock(c->db->lock);

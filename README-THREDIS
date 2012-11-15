@@ -46,7 +46,7 @@ Performance
 The most striking performance gain can be observed on SMP systems when
 running time-consuming operations. In a simple experiement, 20 clients
 running a ZUNIONSTORE operation on 25 Sorted Sets of 100,000 random
-entires took 61.79s on single-threaded Redis versus 6.30s on
+entries took 61.79s on single-threaded Redis versus 6.30s on
 Thredis. This test was conducted on a 24-core server. This is a more
 than 980% (or almost 10x) performance improvement!
 

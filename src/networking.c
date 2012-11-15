@@ -1065,6 +1065,8 @@ void processInputBuffer(redisClient *c) {
                  * aeProcessEvents */
                 while (pthread_mutex_trylock(c->lock))
                     aeProcessEvents(server.el, AE_ALL_EVENTS|AE_DONT_WAIT);
+                server.locking_mode--;
+                redisAssertWithInfo(c,NULL,server.locking_mode >= 0);
             }
         }
     }
