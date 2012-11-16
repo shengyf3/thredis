@@ -76,4 +76,104 @@ LRANGE_300 (first 300 elements)         12911.22   10552.42    81.73%
 LRANGE_500 (first 450 elements)         9201.33    7772.91     84.48%
 LRANGE_600 (first 600 elements)         7400.66    6249.49     84.45%
 MSET (10 keys)                          25248.06   24556.15    97.26%
+
                                                       AVERAGE: 90.83%
+Locking Strategy (for Developers)
+================
+
+Basic Idea
+----------
+
+The objective of locking is to make sure that no command is attempting
+to use (i.e. read or write) any key at the same time.
+
+At first glance it may seem that there needs to be a lock per key that
+is in use, but actually, if we consider that the number of operations
+potentially running in parallel is limited to the number of connected
+clients, it becomes apparent that there only needs to be a lock per
+client.
+
+Thredis maintains a per-database dictionary of locked keys. To "lock a
+key" means to assign a lock (pthread_mutex_t object) to the key name.
+
+So, upon connection a client gets its own lock. This lock exists for
+as long as the client remains connected and will be destroyed after
+the client disconnects, when the redisClient is freed. Clients lock
+their lock before any operation they submit and unlock it immediately
+after it's over.
+
+Let's say we have two clients, A and B, connected at the same
+time. They each have their locks, lock_A and lock_B. Client A submits
+an operation that uses key_1. Client B submits an operation
+that also uses key_1. Here is one way this could play out:
+
+Client A locks lock_A
+Client A checks locked_keys dictionary for key_1 and it's not there.
+Client A assigns its lock key_1:
+
+   locked_keys[key_1] = lock_A
+
+Client B locks lock_B
+Client B checks locked_keys for key_1 and gets lock_A.
+Client B attempts to lock lock_A and blocks
+
+Client A operation executes and is complete.
+Client A deletes locked_keys[key_1]
+Client A unlocks lock_A
+
+Client B now has lock_A
+Client B assigns its lock to key_1:
+
+  locked_keys[key_1] = lock_B
+
+Client B unlocks lock_A
+Client B operation executes and is complete
+Client B deletes locked_keys[key_1]
+Client B unlocks lock_B
+
+NOTE: We have skipped an important step above for simplicity - any
+access to the locked_keys dictionary needs to be protected by a lock
+of its own, which is why there exists a per-database lock.
+
+Certain operations also require locking a per-server lock,
+e.g. anything that touches server-level data structures.
+
+Avoiding Deadlocks
+------------------
+
+First rule of obtaining multiple locks is that they always have to
+obtained and released in the same order or deadlocks will happen. To
+ensure this Thredis provides lockKeys and unlockKeys functions which
+use qsort() to sort keys before locking/unlocking. (Actually
+unlockKeys doesn't need to sort them because they remain sorted from
+prior lockKeys).
+
+There is still a possibility of a circular deadlock. This is because
+our locks are per-client rather than per key, and pthread mutex do not
+guarantee that the order in which you attempt to obtain a lock is the
+order in which they will acquired. So it is possible that client B is
+waiting on lock_A for key X, while client A is done with key X, has
+re-obtained its own lock for the next operation and is now witing on
+lock_A for some key that Client A has locked. (In this case Client B
+is waiting on lock_A "mistakingly" for key X which client A no longer
+needs).
+
+The way to solve this is to use a lock timeout. If a client is
+attempting to lock multiple locks, A, B and C, attempt to lock C times
+out, it should unlock B and A and attempt to start over. Using this
+unroll and start from stratch strategy, sooner or later one client
+will win all the locks.
+
+Locking Mode
+------------
+
+Because O(1) commands in Thredis still run on the main thread, when
+there are no threads running there is no point in locking. Thredis
+maintains a counter of threads (server.locking_mode) which is
+incremented every time a thread is submitted and decremented when it's
+finished. Whenever locking_mode is 0, the lockKey* functions just
+return without doing anything.
+
+Note that commands that always run in a thread do not check
+server.locking_mode because locking mode would always be on when they
+are executed.
