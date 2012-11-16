@@ -59,20 +59,21 @@ makes it nearly identical to Redis.
 Here is the output of a redis-benchmark -n 1000000 run comparing Redis
 2.6 with Thredis 2.6 on the same machine (4-core Linux in a VirtualBox
 on a MacBook Pro):
-                                        Thredis      Redis
-PING_INLINE                             47145.35     46296.3   101.83%
-PING_BULK                               47594.12     45132.46  105.45%
-SET                                     45674.61     46550.6    98.12%
-GET                                     46963.79     46805.52  100.34%
-INCR                                    45199.78     46065.96   98.12%
-LPUSH                                   45641.26     46604.84   97.93%
-LPOP                                    45020.71     44780.8   100.54%
-SADD                                    46380.04     46347.79  100.07%
-SPOP                                    47192.07     46161.66  102.23%
-LPUSH (needed to benchmark LRANGE)      44710.72     45932.66   97.34%
-LRANGE_100 (first 100 elements)         20324.38     27678.6    73.43%
-LRANGE_300 (first 300 elements)         10999.16     13329.07   82.52%
-LRANGE_500 (first 450 elements)          8390.32      9696.5    86.53%
-LRANGE_600 (first 600 elements)          6820.54      7561.55   90.20%
-MSET (10 keys)                          25445.94     26949.09   94.42%
-                                                     AVERAGE:   95.27%
+
+                                        Redis      Thredis
+PING_INLINE                             48473.1    46864.75    96.68%
+PING_BULK                               47966.23   48849.59   101.84%
+SET                                     47310.4    41228.61    87.14%
+GET                                     47637.2    47856.05   100.46%
+INCR                                    47673.53   42540.52    89.23%
+LPUSH                                   47869.79   45842.12    95.76%
+LPOP                                    47118.69   42240.43    89.65%
+SADD                                    47712.2    42900.04    89.91%
+SPOP                                    48229.96   47737.25    98.98%
+LPUSH (needed to benchmark LRANGE)      45657.93   42700.37    93.52%
+LRANGE_100 (first 100 elements)         28432.52   20302.1     71.40%
+LRANGE_300 (first 300 elements)         12911.22   10552.42    81.73%
+LRANGE_500 (first 450 elements)         9201.33    7772.91     84.48%
+LRANGE_600 (first 600 elements)         7400.66    6249.49     84.45%
+MSET (10 keys)                          25248.06   24556.15    97.26%
+                                                      AVERAGE: 90.83%
