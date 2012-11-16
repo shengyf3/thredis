@@ -240,13 +240,14 @@ void getrangeCommand(redisClient *c) {
 
 void mgetCommand(redisClient *c) {
     int j;
-    robj **keys;
+    robj **keys = NULL;
 
-    /* lock keys */
-    keys = zmalloc(sizeof(robj *) * (c->argc - 1));
-    for (j = 1; j < c->argc; j++)
-        keys[j-1] = c->argv[j];
-    lockKeys(c, keys, c->argc - 1);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * (c->argc - 1));
+        for (j = 1; j < c->argc; j++)
+            keys[j-1] = c->argv[j];
+        lockKeys(c, keys, c->argc - 1);
+    }
 
     addReplyMultiBulkLen(c,c->argc-1);
     for (j = 1; j < c->argc; j++) {
@@ -261,24 +262,27 @@ void mgetCommand(redisClient *c) {
             }
         }
     }
-    unlockKeys(c, keys, c->argc - 1);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c, keys, c->argc - 1);
+        zfree(keys);
+    }
 }
 
 void msetGenericCommand(redisClient *c, int nx) {
-    int j, n_keys, busykeys = 0;
-    robj **keys;
+    int j, n_keys = 0, busykeys = 0;
+    robj **keys = NULL;
 
     if ((c->argc % 2) == 0) {
         addReplyError(c,"wrong number of arguments for MSET");
         return;
     }
 
-    /* lock keys */
-    keys = zmalloc(sizeof(robj *) * (c->argc / 2));
-    for (n_keys = 0, j = 1; j < c->argc; n_keys++, j += 2)
-        keys[n_keys] = c->argv[j];
-    lockKeys(c, keys, n_keys);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * (c->argc / 2));
+        for (n_keys = 0, j = 1; j < c->argc; n_keys++, j += 2)
+            keys[n_keys] = c->argv[j];
+        lockKeys(c, keys, n_keys);
+    }
 
     /* Handle the NX flag. The MSETNX semantic is to return zero and don't
      * set nothing at all if at least one already key exists. */
@@ -290,8 +294,10 @@ void msetGenericCommand(redisClient *c, int nx) {
         }
         if (busykeys) {
             addReply(c, shared.czero);
-            unlockKeys(c, keys, n_keys);
-            zfree(keys);
+            if (server.locking_mode) {
+                unlockKeys(c, keys, n_keys);
+                zfree(keys);
+            }
             return;
         }
     }
@@ -302,8 +308,10 @@ void msetGenericCommand(redisClient *c, int nx) {
     }
     server.dirty += (c->argc-1)/2;
     addReply(c, nx ? shared.cone : shared.ok);
-    unlockKeys(c, keys, n_keys);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c, keys, n_keys);
+        zfree(keys);
+    }
 }
 
 void msetCommand(redisClient *c) {

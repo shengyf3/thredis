@@ -2450,8 +2450,6 @@ int _compare_keys(const void *k1, const void *k2) {
     return strcasecmp((*(robj **)k1)->ptr, (*(robj **)k2)->ptr);
 }
 
-// THREDIS TODO - these should all be macros
-
 void lockKeys(redisClient *c, robj **keys, int n_keys) {
     int i;
 

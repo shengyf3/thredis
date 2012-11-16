@@ -759,17 +759,21 @@ void rpoplpushHandlePush(redisClient *c, robj *dstkey, robj *dstobj, robj *value
 }
 
 void rpoplpushCommand(redisClient *c) {
-    robj *sobj, *value, **keys;
+    robj *sobj, *value, **keys = NULL;
 
-    keys = zmalloc(sizeof(robj *) * 2);
-    keys[0] = c->argv[1];
-    keys[1] = c->argv[2];
-    lockKeys(c, keys, 2);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * 2);
+        keys[0] = c->argv[1];
+        keys[1] = c->argv[2];
+        lockKeys(c, keys, 2);
+    }
 
     if ((sobj = lookupKeyWriteOrReply(c,c->argv[1],shared.nullbulk)) == NULL ||
         checkType(c,sobj,REDIS_LIST)) {
-        unlockKeys(c, keys, 2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c, keys, 2);
+            zfree(keys);
+        }
         return;
     }
 
@@ -798,8 +802,10 @@ void rpoplpushCommand(redisClient *c) {
         decrRefCount(touchedkey);
         server.dirty++;
     }
-    unlockKeys(c, keys, 2);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c, keys, 2);
+        zfree(keys);
+    }
 }
 
 /*-----------------------------------------------------------------------------
@@ -1106,18 +1112,19 @@ int getTimeoutFromObjectOrReply(redisClient *c, robj *object, time_t *timeout) {
 
 /* Blocking RPOP/LPOP */
 void blockingPopGenericCommand(redisClient *c, int where) {
-    robj *o, **keys;
+    robj *o, **keys = NULL;
     time_t timeout;
     int j;
 
     if (getTimeoutFromObjectOrReply(c,c->argv[c->argc-1],&timeout) != REDIS_OK)
         return;
 
-    /* lock keys */
-    keys = zmalloc(sizeof(robj *) * (c->argc - 2));
-    for (j = 1; j < c->argc-1; j++)
-        keys[j-1] = c->argv[j];
-    lockKeys(c, keys, c->argc - 2);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * (c->argc - 2));
+        for (j = 1; j < c->argc-1; j++)
+            keys[j-1] = c->argv[j];
+        lockKeys(c, keys, c->argc - 2);
+    }
 
     for (j = 1; j < c->argc-1; j++) {
         o = lookupKeyWrite(c->db,c->argv[j]);
@@ -1143,8 +1150,10 @@ void blockingPopGenericCommand(redisClient *c, int where) {
                     rewriteClientCommandVector(c,2,
                         (where == REDIS_HEAD) ? shared.lpop : shared.rpop,
                         c->argv[j]);
-                    unlockKeys(c, keys, c->argc-2);
-                    zfree(keys);
+                    if (server.locking_mode) {
+                        unlockKeys(c, keys, c->argc-2);
+                        zfree(keys);
+                    }
                     return;
                 }
             }
@@ -1155,16 +1164,20 @@ void blockingPopGenericCommand(redisClient *c, int where) {
      * we can do is treating it as a timeout (even with timeout 0). */
     if (c->flags & REDIS_MULTI) {
         addReply(c,shared.nullmultibulk);
-        unlockKeys(c, keys, c->argc-2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c, keys, c->argc-2);
+            zfree(keys);
+        }
         return;
     }
 
     /* If the list is empty or the key does not exists we must block */
     blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL);
 
-    unlockKeys(c, keys, c->argc-2);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c, keys, c->argc-2);
+        zfree(keys);
+    }
 }
 
 void blpopCommand(redisClient *c) {
@@ -1177,15 +1190,17 @@ void brpopCommand(redisClient *c) {
 
 void brpoplpushCommand(redisClient *c) {
     time_t timeout;
-    robj **keys;
+    robj **keys = NULL;
 
     if (getTimeoutFromObjectOrReply(c,c->argv[3],&timeout) != REDIS_OK)
         return;
 
-    keys = zmalloc(sizeof(robj *) * 2);
-    keys[0] = c->argv[1];
-    keys[1] = c->argv[2];
-    lockKeys(c, keys, 2);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * 2);
+        keys[0] = c->argv[1];
+        keys[1] = c->argv[2];
+        lockKeys(c, keys, 2);
+    }
 
     robj *key = lookupKeyWrite(c->db, c->argv[1]);
 
@@ -1208,6 +1223,8 @@ void brpoplpushCommand(redisClient *c) {
             rpoplpushCommand(c);
         }
     }
-    unlockKeys(c, keys, 2);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c, keys, 2);
+        zfree(keys);
+    }
 }

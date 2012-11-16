@@ -304,11 +304,14 @@ void sremCommand(redisClient *c) {
 
 void smoveCommand(redisClient *c) {
     robj *srcset, *dstset, *ele;
-    robj **keys = zmalloc(sizeof(robj*)*2);
+    robj **keys = NULL;
 
-    keys[0] = c->argv[1];
-    keys[1] = c->argv[2];
-    lockKeys(c,keys,2);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj*)*2);
+        keys[0] = c->argv[1];
+        keys[1] = c->argv[2];
+        lockKeys(c,keys,2);
+    }
 
     srcset = lookupKeyWrite(c->db,c->argv[1]);
     dstset = lookupKeyWrite(c->db,c->argv[2]);
@@ -317,8 +320,10 @@ void smoveCommand(redisClient *c) {
     /* If the source key does not exist return 0 */
     if (srcset == NULL) {
         addReply(c,shared.czero);
-        unlockKeys(c,keys,2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c,keys,2);
+            zfree(keys);
+        }
         return;
     }
 
@@ -330,16 +335,20 @@ void smoveCommand(redisClient *c) {
     /* If srcset and dstset are equal, SMOVE is a no-op */
     if (srcset == dstset) {
         addReply(c,shared.cone);
-        unlockKeys(c,keys,2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c,keys,2);
+            zfree(keys);
+        }
         return;
     }
 
     /* If the element cannot be removed from the src set, return 0. */
     if (!setTypeRemove(srcset,ele)) {
         addReply(c,shared.czero);
-        unlockKeys(c,keys,2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c,keys,2);
+            zfree(keys);
+        }
         return;
     }
 
@@ -358,8 +367,10 @@ void smoveCommand(redisClient *c) {
     /* An extra key has changed when ele was successfully added to dstset */
     if (setTypeAdd(dstset,ele)) server.dirty++;
     addReply(c,shared.cone);
-    unlockKeys(c,keys,2);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c,keys,2);
+        zfree(keys);
+    }
 }
 
 void sismemberCommand(redisClient *c) {

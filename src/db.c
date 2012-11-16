@@ -247,12 +247,14 @@ void flushallCommand(redisClient *c) {
 
 void delCommand(redisClient *c) {
     int deleted = 0, j;
-    robj **keys;
+    robj **keys = NULL;
 
-    keys = zmalloc(sizeof(robj *) * (c->argc - 1));
-    for (j = 1; j < c->argc; j++)
-        keys[j-1] = c->argv[j];
-    lockKeys(c, keys, c->argc - 1);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *) * (c->argc - 1));
+        for (j = 1; j < c->argc; j++)
+            keys[j-1] = c->argv[j];
+        lockKeys(c, keys, c->argc - 1);
+    }
 
     for (j = 1; j < c->argc; j++) {
         if (dbDelete(c->db,c->argv[j])) {
@@ -262,8 +264,11 @@ void delCommand(redisClient *c) {
         }
     }
     addReplyLongLong(c,deleted);
-    unlockKeys(c, keys, c->argc - 1);
-    zfree(keys);
+
+    if (server.locking_mode) {
+        unlockKeys(c, keys, c->argc - 1);
+        zfree(keys);
+    }
 }
 
 void existsCommand(redisClient *c) {
@@ -389,7 +394,7 @@ void shutdownCommand(redisClient *c) {
 void renameGenericCommand(redisClient *c, int nx) {
     robj *o;
     long long expire;
-    robj **keys;
+    robj **keys = NULL;
 
     /* To use the same key as src and dst is probably an error */
     if (sdscmp(c->argv[1]->ptr,c->argv[2]->ptr) == 0) {
@@ -397,14 +402,18 @@ void renameGenericCommand(redisClient *c, int nx) {
         return;
     }
 
-    keys = zmalloc(sizeof(robj *)*2);
-    keys[0] = c->argv[1];
-    keys[1] = c->argv[2];
-    lockKeys(c,keys,2);
+    if (server.locking_mode) {
+        keys = zmalloc(sizeof(robj *)*2);
+        keys[0] = c->argv[1];
+        keys[1] = c->argv[2];
+        lockKeys(c,keys,2);
+    }
 
     if ((o = lookupKeyWriteOrReply(c,c->argv[1],shared.nokeyerr)) == NULL) {
-        unlockKeys(c,keys,2);
-        zfree(keys);
+        if (server.locking_mode) {
+            unlockKeys(c,keys,2);
+            zfree(keys);
+        }
         return;
     }
 
@@ -414,8 +423,10 @@ void renameGenericCommand(redisClient *c, int nx) {
         if (nx) {
             decrRefCount(o);
             addReply(c,shared.czero);
-            unlockKeys(c,keys,2);
-            zfree(keys);
+            if (server.locking_mode) {
+                unlockKeys(c,keys,2);
+                zfree(keys);
+            }
             return;
         }
         /* Overwrite: delete the old key before creating the new one with the same name. */
@@ -428,8 +439,10 @@ void renameGenericCommand(redisClient *c, int nx) {
     signalModifiedKey(c->db,c->argv[2]);
     server.dirty++;
     addReply(c,nx ? shared.cone : shared.ok);
-    unlockKeys(c,keys,2);
-    zfree(keys);
+    if (server.locking_mode) {
+        unlockKeys(c,keys,2);
+        zfree(keys);
+    }
 }
 
 void renameCommand(redisClient *c) {
