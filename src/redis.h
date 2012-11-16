@@ -429,7 +429,6 @@ typedef struct redisClient {
     struct redisClient *lua_client;   /* The "fake client" to query Redis from Lua */
     lua_State *lua;   /* The Lua interpreter for this client */
     long long lua_time_start;  /* Start time of script */
-    int lua_kill;         /* Kill the script if true. */
 } redisClient;
 
 struct saveparam {

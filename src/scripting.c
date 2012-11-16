@@ -443,13 +443,6 @@ void luaMaskCountHook(lua_State *lua, lua_Debug *ar) {
         lua_pushstring(lua, buf);
         lua_error(lua);
     }
-
-    if (lua_caller->lua_kill) {
-        /* THREDIS TODO - currently this is impossible */
-        redisLog(REDIS_WARNING,"Lua script killed by user with SCRIPT KILL.");
-        lua_pushstring(lua,"Script killed by user with SCRIPT KILL...");
-        lua_error(lua);
-    }
 }
 
 void luaLoadLib(lua_State *lua, const char *libname, lua_CFunction luafunc) {
@@ -870,7 +863,7 @@ void evalGenericCommand(redisClient *c, int evalsha) {
      * We set the hook only if the time limit is enabled as the hook will
      * make the Lua script execution slower. */
     c->lua_time_start = ustime()/1000;
-    c->lua_kill = 0;
+
     if (server.lua_time_limit > 0 && server.masterhost == NULL) {
         lua_sethook(lua,luaMaskCountHook,LUA_MASKCOUNT,100000);
         delhook = 1;
@@ -1011,14 +1004,6 @@ void scriptCommand(redisClient *c) {
         }
         addReplyBulkCBuffer(c,funcname+2,40);
         sdsfree(sha);
-    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
-        // THREDIS TODO - this is broken
-        if (c->lua_time_start == 0) {
-            addReplyError(c,"No scripts in execution right now.");
-        } else {
-            c->lua_kill = 1;
-            addReply(c,shared.ok);
-        }
     } else {
         addReplyError(c, "Unknown SCRIPT subcommand or wrong # of args.");
     }

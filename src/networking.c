@@ -115,7 +115,6 @@ redisClient *createClient(int fd) {
         c->lua_client = NULL;
     }
     c->lua_time_start = 0;
-    c->lua_kill = 0;
     
     return c;
 }
