@@ -1577,7 +1577,29 @@ void call(redisClient *c, int flags) {
     server.stat_numcommands++;
 }
 
+int timedEventProcessInputBufferHandler(aeEventLoop *el, long long id, void *clientData) {
+    redisClient *c = (redisClient *) clientData;
+    REDIS_NOTUSED(el);
+    REDIS_NOTUSED(id);
+
+    if (!pthread_mutex_trylock(c->lock)) {
+        server.locking_mode--;
+        redisAssertWithInfo(c,NULL,server.locking_mode >= 0);
+
+        /* process next command, if any... */
+        processInputBuffer(c);
+        c->refcount--;
+        return AE_NOMORE;
+    }
+    else
+        /* Try again at the earliest opportunity. (This should never
+         * nappen because this event is scheduled after the command is
+         * complete?) */
+        return 0;
+}
+
 void callCommandAndResetClient(redisClient *c) {
+    /** thread start */
     /* call the actual command */
     call(c,REDIS_CALL_FULL);
 
@@ -1587,10 +1609,18 @@ void callCommandAndResetClient(redisClient *c) {
         handleClientsBlockedOnLists();
     pthread_mutex_unlock(server.lock);
 
-    resetClient(c);    
+    /* We are in a thread. Create a timedEvent (which will run in the
+     * main loop) to check if there are more pipelined commands to
+     * process. */
+    pthread_mutex_lock(server.el->lock);
+    c->refcount++;
+    aeCreateTimeEvent(server.el, 0, timedEventProcessInputBufferHandler, (void *) c, NULL);
+    pthread_mutex_unlock(server.el->lock);
 
-    /* this lock was locked earlier */
+    /* reset client and unlock */
+    resetClient(c);
     pthread_mutex_unlock(c->lock);
+    /** thread finish */
 }
 
 /* If this function gets called we already read a whole
@@ -1722,8 +1752,8 @@ int processCommand(redisClient *c) {
             p == zrevrangebyscoreCommand || p == zunionstoreCommand) {
 
             c->refcount++;
-            threadpool_add(server.tpool, (void (*)(void *)) callCommandAndResetClient, (void *)c, 0);
             server.locking_mode++;
+            threadpool_add(server.tpool, (void (*)(void *)) callCommandAndResetClient, (void *)c, 0);
             return REDIS_ADDED_TO_THREAD;
         } else {
             call(c,REDIS_CALL_FULL);

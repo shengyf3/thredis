@@ -328,7 +328,9 @@ void debugCommand(redisClient *c) {
         double dtime = strtod(c->argv[2]->ptr,NULL);
         long long utime = dtime*1000000;
 
+        pthread_mutex_unlock(c->lock);
         usleep(utime);
+        pthread_mutex_lock(c->lock);
         addReply(c,shared.ok);
     } else {
         addReplyError(c,

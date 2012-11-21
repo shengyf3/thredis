@@ -671,7 +671,7 @@ struct redisServer {
 
     threadpool_t *tpool;
     int threadpool_size;
-    pthread_mutex_t *lock;   /* only used for blocking BL* command stuff */
+    pthread_mutex_t *lock;
     int locking_mode;        /* if this is 0, locking should be unnecessary */
 };
 

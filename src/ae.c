@@ -38,6 +38,7 @@
 #include <poll.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "ae.h"
 #include "zmalloc.h"
@@ -79,6 +80,8 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
      * vector with it. */
     for (i = 0; i < setsize; i++)
         eventLoop->events[i].mask = AE_NONE;
+    eventLoop->lock = zmalloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(eventLoop->lock, NULL);
     return eventLoop;
 
 err:
@@ -94,6 +97,8 @@ void aeDeleteEventLoop(aeEventLoop *eventLoop) {
     aeApiFree(eventLoop);
     zfree(eventLoop->events);
     zfree(eventLoop->fired);
+    pthread_mutex_destroy(eventLoop->lock);
+    zfree(eventLoop->lock);
     zfree(eventLoop);
 }
 
@@ -276,6 +281,11 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
             id = te->id;
             retval = te->timeProc(eventLoop, id, te->clientData);
             processed++;
+            /* special case - process asap, but let other events happen too */
+            if (retval == 0) {
+                te = te->next;
+                continue;
+            }
             /* After an event is processed our time event list may
              * no longer be the same, so we restart from head.
              * Still we make sure to don't process events registered
@@ -332,6 +342,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         aeTimeEvent *shortest = NULL;
         struct timeval tv, *tvp;
 
+        pthread_mutex_lock(eventLoop->lock);
+
         if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
             shortest = aeSearchNearestTimer(eventLoop);
         if (shortest) {
@@ -362,6 +374,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 tvp = NULL; /* wait forever */
             }
         }
+        pthread_mutex_unlock(eventLoop->lock);
 
         numevents = aeApiPoll(eventLoop, tvp);
         for (j = 0; j < numevents; j++) {
@@ -385,9 +398,11 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         }
     }
     /* Check time events */
-    if (flags & AE_TIME_EVENTS)
+    if (flags & AE_TIME_EVENTS) {
+        pthread_mutex_lock(eventLoop->lock);
         processed += processTimeEvents(eventLoop);
-
+        pthread_mutex_unlock(eventLoop->lock);
+    }
     return processed; /* return the number of processed file/time events */
 }
 

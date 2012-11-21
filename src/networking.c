@@ -1057,15 +1057,14 @@ void processInputBuffer(redisClient *c) {
                 resetClient(c);
             } else {
                 /* at this point there may still be more pipelined
-                 * commands to process in this request. therefore we
-                 * cannot leave this loop and have to process them,
-                 * but we should allow other stuff to run, so we
-                 * trylock, and for as long as it's failing, we call
-                 * aeProcessEvents */
-                while (pthread_mutex_trylock(c->lock))
-                    aeProcessEvents(server.el, AE_ALL_EVENTS|AE_DONT_WAIT);
-                server.locking_mode--;
-                redisAssertWithInfo(c,NULL,server.locking_mode >= 0);
+                 * commands to process in querybuf. We leave this
+                 * loop without unlocking, and a timedEvent will be
+                 * scheduled when the thread is done which will
+                 * re-enter this function and process remaining
+                 * commands, if any, or unlock. Important implication
+                 * here is that pipelined commands are certainly not
+                 * going to be atomic! */
+                return;
             }
         }
     }

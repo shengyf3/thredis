@@ -238,6 +238,9 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
     c->argv = argv;
     c->argc = argc;
 
+    /* lock before running redis commands */
+    pthread_mutex_lock(lua_caller->lock);
+
     /* Command lookup */
     cmd = lookupCommand(argv[0]->ptr);
     if (!cmd || ((cmd->arity > 0 && cmd->arity != argc) ||
@@ -322,6 +325,7 @@ cleanup:
         decrRefCount(c->argv[j]);
     zfree(c->argv);
 
+    pthread_mutex_unlock(lua_caller->lock);
     if (raise_error) {
         /* If we are here we should have an error in the stack, in the
          * form of a table with an "err" field. Extract the string to
@@ -794,6 +798,7 @@ void evalGenericCommand(redisClient *c, int evalsha) {
     long long numkeys;
     int delhook = 0;
     robj *script = NULL;
+    int rc;
 
     /* We want the same PRNG sequence at every call so that our PRNG is
      * not affected by external state. */
@@ -872,7 +877,11 @@ void evalGenericCommand(redisClient *c, int evalsha) {
     /* At this point whatever this script was never seen before or if it was
      * already defined, we can call it. We have zero arguments and expect
      * a single return value. */
-    if (lua_pcall(lua,0,1,0)) {
+    /* no need to keep the client lock, we will lock in luaRedis* calls */
+    pthread_mutex_unlock(c->lock);
+    rc = lua_pcall(lua,0,1,0);
+    pthread_mutex_lock(c->lock);
+    if (rc) {
         if (delhook) lua_sethook(lua,luaMaskCountHook,0,0); /* Disable hook */
         c->lua_time_start = 0;
         selectDb(c,c->lua_client->db->id); /* set DB ID from Lua client */

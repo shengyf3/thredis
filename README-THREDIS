@@ -60,24 +60,24 @@ Here is the output of a redis-benchmark -n 1000000 run comparing Redis
 2.6 with Thredis 2.6 on the same machine (4-core Linux in a VirtualBox
 on a MacBook Pro):
 
-                                        Redis      Thredis
-PING_INLINE                             48473.1    46864.75    96.68%
-PING_BULK                               47966.23   48849.59   101.84%
-SET                                     47310.4    41228.61    87.14%
-GET                                     47637.2    47856.05   100.46%
-INCR                                    47673.53   42540.52    89.23%
-LPUSH                                   47869.79   45842.12    95.76%
-LPOP                                    47118.69   42240.43    89.65%
-SADD                                    47712.2    42900.04    89.91%
-SPOP                                    48229.96   47737.25    98.98%
-LPUSH (needed to benchmark LRANGE)      45657.93   42700.37    93.52%
-LRANGE_100 (first 100 elements)         28432.52   20302.1     71.40%
-LRANGE_300 (first 300 elements)         12911.22   10552.42    81.73%
-LRANGE_500 (first 450 elements)         9201.33    7772.91     84.48%
-LRANGE_600 (first 600 elements)         7400.66    6249.49     84.45%
-MSET (10 keys)                          25248.06   24556.15    97.26%
+                                        Thredis    Redis
+PING_INLINE                             47016.79   46611.36   100.87%
+PING_BULK                               47118.69   46702.79   100.89%
+SET                                     45651.68   46193.64    98.83%
+GET                                     47030.05   46761.75   100.57%
+INCR                                    45345.3    46596.15    97.32%
+LPUSH                                   45246.82   45639.18    99.14%
+LPOP                                    44692.74   46212.86    96.71%
+SADD                                    46189.38   46687.52    98.93%
+SPOP                                    46831.83   46792.38   100.08%
+LPUSH (needed to benchmark LRANGE)      44165.71   46255.61    95.48%
+LRANGE_100 (first 100 elements)         19529.34   28648.37    68.17%
+LRANGE_300 (first 300 elements)         11363.25   13526.13    84.01%
+LRANGE_500 (first 450 elements)          8519.05    9408.84    90.54%
+LRANGE_600 (first 600 elements)          6818.77    7376.43    92.44%
+MSET (10 keys)                          26227.45   27472.53    95.47%
 
-                                                      AVERAGE: 90.83%
+                                                      AVERAGE: 94.63%
 Locking Strategy (for Developers)
 ================
 
