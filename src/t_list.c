@@ -836,8 +836,6 @@ void blockForKeys(redisClient *c, robj **keys, int numkeys, time_t timeout, robj
     list *l;
     int j;
 
-    //pthread_mutex_lock(server.lock);
-
     c->bpop.keys = zmalloc(sizeof(robj*)*numkeys);
     c->bpop.count = numkeys;
     c->bpop.timeout = timeout;
@@ -870,7 +868,6 @@ void blockForKeys(redisClient *c, robj **keys, int numkeys, time_t timeout, robj
     /* Mark the client as a blocked client */
     c->flags |= REDIS_BLOCKED;
     server.bpop_blocked_clients++;
-    //pthread_mutex_unlock(server.lock);
 }
 
 /* Unblock a client that's waiting in a blocking operation such as BLPOP */

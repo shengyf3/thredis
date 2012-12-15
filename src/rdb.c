@@ -731,6 +731,8 @@ int rdbSaveBackground(char *filename) {
         if (server.ipfd > 0) close(server.ipfd);
         if (server.sofd > 0) close(server.sofd);
         retval = rdbSave(filename);
+        if (retval == REDIS_OK)
+            retval = (loadOrSaveDb(server.sql_db, server.sql_filename, 1) != SQLITE_OK);
         exitFromChild((retval == REDIS_OK) ? 0 : 1);
     } else {
         /* Parent */
