@@ -217,7 +217,6 @@ void incrRefCount(robj *o) {
 
 void decrRefCount(void *obj) {
     robj *o = obj;
-
     if (o->refcount <= 0) redisPanic("decrRefCount against refcount <= 0");
     if (o->refcount == 1) {
         switch(o->type) {

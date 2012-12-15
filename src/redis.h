@@ -62,6 +62,7 @@
 #include "intset.h"  /* Compact integer set structure */
 #include "version.h" /* Version macro */
 #include "util.h"    /* Misc functions useful in many places */
+#include "sqlite3.h" /* SQLite */
 
 /* Error codes */
 #define REDIS_OK                0
@@ -184,6 +185,7 @@
 #define REDIS_ASKING 1024   /* Client issued the ASKING command */
 #define REDIS_CLOSE_ASAP 2048 /* Close this client ASAP */
 #define REDIS_UNIX_SOCKET 4096 /* Client connected via Unix domain socket */
+#define REDIS_SQLITE_CLIENT 8192 /* This is a non connected client used by SQLite */
 
 /* Client request types */
 #define REDIS_REQ_INLINE 1
@@ -673,6 +675,10 @@ struct redisServer {
     int threadpool_size;
     pthread_mutex_t *lock;
     int locking_mode;        /* if this is 0, locking should be unnecessary */
+
+    sqlite3 *sql_db;                  /* SQLite db */
+    struct redisClient *sql_client;   /* The "fake client" to query Redis from SQLite */
+    char *sql_filename;               /* Name of SQL dump file */
 };
 
 typedef struct pubsubPattern {
@@ -1053,6 +1059,10 @@ char *sentinelHandleConfiguration(char **argv, int argc);
 void scriptingInit(redisClient *c);
 void scriptingRelease(redisClient *c);
 
+/* SQLite */
+void sqlInit(void);
+int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save);
+
 /* Git SHA1 */
 char *redisGitSHA1(void);
 char *redisGitDirty(void);
@@ -1200,6 +1210,8 @@ void timeCommand(redisClient *c);
 void bitopCommand(redisClient *c);
 void bitcountCommand(redisClient *c);
 void replconfCommand(redisClient *c);
+void sqlCommand(redisClient *c);
+void sqlsaveCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));

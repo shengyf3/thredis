@@ -250,7 +250,9 @@ struct redisCommand redisCommandTable[] = {
     {"script",scriptCommand,-2,"ras",0,NULL,0,0,0,0,0},
     {"time",timeCommand,1,"rR",0,NULL,0,0,0,0,0},
     {"bitop",bitopCommand,-4,"wm",0,NULL,2,-1,1,0,0},
-    {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0}
+    {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0},
+    {"sql",sqlCommand,2,"wm",0,NULL,1,1,1,0,0},
+    {"sqlsave",sqlsaveCommand,1,"ar",0,NULL,0,0,0,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -1112,7 +1114,7 @@ void initServerConfig() {
     server.loading = 0;
     server.logfile = NULL; /* NULL = log on standard output */
     server.syslog_enabled = 0;
-    server.syslog_ident = zstrdup("redis");
+    server.syslog_ident = zstrdup("thredis");
     server.syslog_facility = LOG_LOCAL0;
     server.daemonize = 0;
     server.aof_state = REDIS_AOF_OFF;
@@ -1132,6 +1134,7 @@ void initServerConfig() {
     server.aof_flush_postponed_start = 0;
     server.pidfile = zstrdup("/var/run/redis.pid");
     server.rdb_filename = zstrdup("dump.rdb");
+    server.sql_filename = zstrdup("dump.sqlite");
     server.aof_filename = zstrdup("appendonly.aof");
     server.requirepass = NULL;
     server.rdb_compression = 1;
@@ -1391,6 +1394,7 @@ void initServer() {
 
     slowlogInit();
     bioInit();
+    sqlInit(); /* SQLite */
 }
 
 /* Populates the Redis Command Table starting from the hard coded list
@@ -1523,12 +1527,14 @@ void call(redisClient *c, int flags) {
 
     /* Sent the command to clients in MONITOR mode, only if the commands are
      * not geneated from reading an AOF. */
+    pthread_mutex_lock(server.lock);
     if (listLength(server.monitors) &&
         !server.loading &&
         !(c->cmd->flags & REDIS_CMD_SKIP_MONITOR))
     {
         replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
     }
+    pthread_mutex_unlock(server.lock);
 
     /* Call the command. */
     redisOpArrayInit(&server.also_propagate); // THREDIS TODO - is this a problem?
@@ -1741,7 +1747,7 @@ int processCommand(redisClient *c) {
             p == linsertCommand || p == lrangeCommand ||
             p == lremCommand || p == lsetCommand ||
             p == ltrimCommand || p == migrateCommand ||
-            p == restoreCommand ||
+            p == restoreCommand || p == sqlCommand ||
             p == sdiffCommand || p == sdiffstoreCommand ||
             p == sinterCommand || p == sinterstoreCommand ||
             p == sortCommand || p == sunionCommand ||
@@ -1887,6 +1893,7 @@ void pingCommand(redisClient *c) {
 void echoCommand(redisClient *c) {
     addReplyBulk(c,c->argv[1]);
 }
+
 
 void timeCommand(redisClient *c) {
     struct timeval tv;
@@ -2269,6 +2276,98 @@ sds genRedisInfoString(char *section) {
             }
         }
     }
+
+    /* SQLite */
+    if (allsections || defsections || !strcasecmp(section,"sqlite")) {
+        int curr, high;
+        char hmem[64];
+        char peak_hmem[64];
+
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info,"# SQLite\r\n");
+        sqlite3_status(SQLITE_STATUS_MEMORY_USED,&curr,&high,0);
+        bytesToHuman(hmem,curr);
+        bytesToHuman(peak_hmem,high);
+        info = sdscatprintf(info,
+        "sqlite_memory:%d\r\n"
+        "sqlite_memory_human:%s\r\n"
+        "sqlite_memory_peak:%d\r\n"
+        "sqlite_memory_peak_human:%s\r\n",
+        curr,hmem,high,peak_hmem);
+        sqlite3_status(SQLITE_STATUS_MALLOC_SIZE,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_malloc_peak:%d\r\n",
+        high);
+        sqlite3_status(SQLITE_STATUS_PAGECACHE_SIZE,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_pagecache:%d\r\n",
+        high);
+        sqlite3_status(SQLITE_STATUS_PAGECACHE_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_pagecache_pages:%d\r\n"
+        "sqlite_pagecache_pages_peak:%d\r\n",
+        curr,high);
+        sqlite3_status(SQLITE_STATUS_PAGECACHE_OVERFLOW,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_pagecache_oveflow:%d\r\n"
+        "sqlite_pagecache_overflow_peak:%d\r\n",
+        curr,high);
+        sqlite3_status(SQLITE_STATUS_SCRATCH_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_scratch_allocations:%d\r\n"
+        "sqlite_scratch_allocations_peak:%d\r\n",
+        curr,high);
+        sqlite3_status(SQLITE_STATUS_SCRATCH_OVERFLOW,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_scratch_overflow:%d\r\n"
+        "sqlite_scratch_overflow_peak:%d\r\n",
+        curr,high);
+        sqlite3_status(SQLITE_STATUS_SCRATCH_SIZE,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_scratch:%d\r\n",
+        high);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_LOOKASIDE_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_lookaside:%d\r\n"
+        "sqlite_db_lookaside_peak:%d\r\n",
+        curr,high);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_LOOKASIDE_HIT,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_lookaside_hits:%d\r\n",
+        high);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_lookaside_miss_size:%d\r\n",
+        high);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_lookaside_miss_full:%d\r\n",
+        high);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_CACHE_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_cache_used:%d\r\n",
+        curr);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_SCHEMA_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_schema_used:%d\r\n",
+        curr);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_STMT_USED,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_stmt_used:%d\r\n",
+        curr);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_CACHE_HIT,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_cache_hits:%d\r\n",
+        curr);
+        sqlite3_db_status(server.sql_db,SQLITE_DBSTATUS_CACHE_MISS,&curr,&high,0);
+        info = sdscatprintf(info,
+        "sqlite_db_cache_misses:%d\r\n",
+        curr);
+        info = sdscatprintf(info,
+        "sqlite_db_total_changes:%d\r\n",
+        sqlite3_total_changes(server.sql_db));
+    }
+
     return info;
 }
 
@@ -2476,7 +2575,7 @@ int freeMemoryIfNeeded(void) {
 
 /* ================================= Locking ================================ */
 
-int _compare_keys(const void *k1, const void *k2) {
+static int _compare_keys(const void *k1, const void *k2) {
     return strcasecmp((*(robj **)k1)->ptr, (*(robj **)k2)->ptr);
 }
 
@@ -2520,43 +2619,54 @@ void lockKey(redisClient *c, robj *key) {
 }
 
 int genericLockKey(redisClient *c, robj *key, int trylock) {
-  dictEntry *de;
+    dictEntry *de;
 
-  if (!server.locking_mode) return 0;
+    if (!server.locking_mode) return 0;
 
-  pthread_mutex_lock(c->db->lock); 
-  de = dictFind(c->db->locked_keys, key->ptr);
-  if (!de) {
-      dictAdd(c->db->locked_keys, sdsdup(key->ptr), c->lock);
-      pthread_mutex_unlock(c->db->lock);
-  } else {
-      pthread_mutex_t *lock = dictGetVal(de);
-      
-      if (lock == c->lock) {
-          /* we are already holding this lock */
-          pthread_mutex_unlock(c->db->lock);
-          return 0;
-      } else
-          pthread_mutex_unlock(c->db->lock);
+#ifdef MONITOR_LOCKS
+    if (listLength(server.monitors) && !server.loading) {
+        robj **argv = zcalloc(sizeof(robj)*2);
+        argv[0] = createStringObject("locking", 7);
+        argv[1] = key;
+        replicationFeedMonitors(c,server.monitors,c->db->id,argv,2);
+        decrRefCount(argv[0]);
+        zfree(argv);
+    }
+#endif /* MONITOR_LOCKS */
 
-      if (trylock) {
-          struct timespec   ts;
-          struct timeval    tp;
-          if (gettimeofday(&tp, NULL))
-              redisPanic("gettimeofday failed, on Linux make sure the process has CAP_SYS_TIME");
-          ts.tv_sec  = tp.tv_sec;
-          ts.tv_nsec = tp.tv_usec * 100000000; /* 100ms */
-          if (pthread_mutex_timedlock(lock, &ts))
-              return 1;
-      } else
-          pthread_mutex_lock(lock);
+    pthread_mutex_lock(c->db->lock);
+    de = dictFind(c->db->locked_keys, key->ptr);
+    if (!de) {
+        dictAdd(c->db->locked_keys, sdsdup(key->ptr), c->lock);
+        pthread_mutex_unlock(c->db->lock);
+    } else {
+        pthread_mutex_t *lock = dictGetVal(de);
 
-      pthread_mutex_lock(c->db->lock);
-      dictReplace(c->db->locked_keys, sdsdup(key->ptr), c->lock);
-      pthread_mutex_unlock(c->db->lock);
-      pthread_mutex_unlock(lock);
-  }
-  return 0;
+        if (lock == c->lock) {
+            /* we are already holding this lock */
+            pthread_mutex_unlock(c->db->lock);
+            return 0;
+        } else
+            pthread_mutex_unlock(c->db->lock);
+
+        if (trylock) {
+            struct timespec   ts;
+            struct timeval    tp;
+            if (gettimeofday(&tp, NULL))
+                redisPanic("gettimeofday failed, on Linux make sure the process has CAP_SYS_TIME");
+            ts.tv_sec  = tp.tv_sec;
+            ts.tv_nsec = tp.tv_usec * 100000000; /* 100ms */
+            if (pthread_mutex_timedlock(lock, &ts))
+                return 1;
+        } else
+            pthread_mutex_lock(lock);
+
+        pthread_mutex_lock(c->db->lock);
+        dictReplace(c->db->locked_keys, sdsdup(key->ptr), c->lock);
+        pthread_mutex_unlock(c->db->lock);
+        pthread_mutex_unlock(lock);
+    }
+    return 0;
 }
 
 void unlockKey(redisClient *c, robj *key) {
@@ -2566,6 +2676,17 @@ void unlockKey(redisClient *c, robj *key) {
     pthread_mutex_lock(c->db->lock);
     dictDelete(c->db->locked_keys, key->ptr);
     pthread_mutex_unlock(c->db->lock);
+
+#ifdef MONITOR_LOCKS
+    if (listLength(server.monitors) && !server.loading) {
+        robj **argv = zcalloc(sizeof(robj)*2);
+        argv[0] = createStringObject("unlocked", 8);
+        argv[1] = key;
+        replicationFeedMonitors(c,server.monitors,c->db->id,argv,2);
+        decrRefCount(argv[0]);
+        zfree(argv);
+    }
+#endif /* MONITOR_LOCKS */
 }
 
 /* =================================== Main! ================================ */
@@ -2720,6 +2841,14 @@ void loadDataFromDisk(void) {
             redisLog(REDIS_WARNING,"Fatal error loading the DB. Exiting.");
             exit(1);
         }
+    }
+    start = ustime();
+    if (loadOrSaveDb(server.sql_db, server.sql_filename, 0) != SQLITE_OK) {
+        redisLog(REDIS_WARNING,"Fatal error loading SQL DB. Exiting");
+        exit(1);
+    } else {
+        redisLog(REDIS_NOTICE,"SQL DB loaded from disk: %.3f seconds",
+                (float)(ustime()-start)/1000000);
     }
 }
 
