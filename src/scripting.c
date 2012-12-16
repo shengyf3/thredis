@@ -239,7 +239,7 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
     c->argc = argc;
 
     /* lock before running redis commands */
-    pthread_mutex_lock(lua_caller->lock);
+    pthread_mutex_lock(c->lock);
 
     /* Command lookup */
     cmd = lookupCommand(argv[0]->ptr);
@@ -325,7 +325,7 @@ cleanup:
         decrRefCount(c->argv[j]);
     zfree(c->argv);
 
-    pthread_mutex_unlock(lua_caller->lock);
+    pthread_mutex_unlock(c->lock);
     if (raise_error) {
         /* If we are here we should have an error in the stack, in the
          * form of a table with an "err" field. Extract the string to
@@ -629,6 +629,8 @@ void scriptingRelease(redisClient *c) {
     /* This will clear the lua_scripts dict, but weill leave functions
      * in other client's lua states, though it seems like that is okay */
     lua_close(c->lua);
+    if (!pthread_mutex_destroy(c->lua_client->lock))
+        zfree(c->lua_client->lock);
     zfree(c->lua_client);
 }
 
@@ -877,10 +879,8 @@ void evalGenericCommand(redisClient *c, int evalsha) {
     /* At this point whatever this script was never seen before or if it was
      * already defined, we can call it. We have zero arguments and expect
      * a single return value. */
-    /* no need to keep the client lock, we will lock in luaRedis* calls */
-    pthread_mutex_unlock(c->lock);
     rc = lua_pcall(lua,0,1,0);
-    pthread_mutex_lock(c->lock);
+
     if (rc) {
         if (delhook) lua_sethook(lua,luaMaskCountHook,0,0); /* Disable hook */
         c->lua_time_start = 0;
