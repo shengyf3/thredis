@@ -234,12 +234,12 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
         return 1;
     }
 
+    /* lock before running redis commands */
+    pthread_mutex_lock(c->lock);
+
     /* Setup our fake client for command execution */
     c->argv = argv;
     c->argc = argc;
-
-    /* lock before running redis commands */
-    pthread_mutex_lock(c->lock);
 
     /* Command lookup */
     cmd = lookupCommand(argv[0]->ptr);
