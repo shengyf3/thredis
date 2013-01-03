@@ -247,7 +247,7 @@ static int vt_column(sqlite3_vtab_cursor *s3_cur, sqlite3_context *ctx, int i)
             if (o->encoding == REDIS_ENCODING_RAW)
                 sqlite3_result_text(ctx,o->ptr,sdslen(o->ptr),SQLITE_STATIC);
             else
-                sqlite3_result_int64(ctx,(int)o->ptr);
+                sqlite3_result_int64(ctx,(long)o->ptr);
         }
     } else if (cur->robj->type == REDIS_LIST) {
         if (i == 0)
@@ -259,7 +259,7 @@ static int vt_column(sqlite3_vtab_cursor *s3_cur, sqlite3_context *ctx, int i)
                                     cur->robj->refcount > 1 ?
                                     SQLITE_STATIC : SQLITE_TRANSIENT);
             else
-                sqlite3_result_int64(ctx,(int)o->ptr);
+                sqlite3_result_int64(ctx,(long)o->ptr);
             decrRefCount(o);
         }
     } else if (cur->robj->type == REDIS_HASH) {
@@ -272,7 +272,7 @@ static int vt_column(sqlite3_vtab_cursor *s3_cur, sqlite3_context *ctx, int i)
                                 cur->robj->refcount > 1 ?
                                 SQLITE_STATIC : SQLITE_TRANSIENT);
         else
-            sqlite3_result_int64(ctx,(int)o->ptr);
+            sqlite3_result_int64(ctx,(long)o->ptr);
         decrRefCount(o);
 
     } else if (cur->robj->type == REDIS_ZSET || cur->robj->type == REDIS_SET) {
@@ -285,7 +285,7 @@ static int vt_column(sqlite3_vtab_cursor *s3_cur, sqlite3_context *ctx, int i)
                                     cur->robj->refcount > 1 ?
                                     SQLITE_STATIC : SQLITE_TRANSIENT);
             else
-                sqlite3_result_int64(ctx,(int)o->ptr);
+                sqlite3_result_int64(ctx,(long)o->ptr);
             /* no need for decrRefCount(o), zuiNext will do that */
         }
     }
@@ -553,7 +553,7 @@ void sqlCommand(redisClient *c) {
     sqlite3_mutex_enter(sqlite3_db_mutex(server.sql_db));
 
     while ((rc==SQLITE_OK || (rc==SQLITE_SCHEMA && (++retries)<2)) && sql[0]) {
-        int n_cols;
+        int n_cols, i;
 
         if ((rc = sqlite3_prepare_v2(server.sql_db, sql, -1, &stmt, &leftover)) != SQLITE_OK)
             continue;   /* possibly SQLITE_SCHEMA, try again */
@@ -569,17 +569,20 @@ void sqlCommand(redisClient *c) {
 
         n_cols = sqlite3_column_count(stmt);
 
+        if (n_cols > 0) { /* write column names */
+            replylen = addDeferredMultiBulkLength(c);
+            addReplyMultiBulkLen(c, n_cols);
+            for (i=0; i<n_cols; i++) {
+                addReplyMultiBulkLen(c, 2);
+                addReplyBulkCString(c, (char *)sqlite3_column_name(stmt, i));
+                addReplyBulkCString(c, (char *)sqlite3_column_decltype(stmt, i));
+            }
+            rows_sent++;
+        }
+
         while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            int i;
             sqlite3_mutex_leave(sqlite3_db_mutex(server.sql_db));
 
-            if (!rows_sent) { /* write column names */
-                replylen = addDeferredMultiBulkLength(c);
-                addReplyMultiBulkLen(c, n_cols);
-                for (i=0; i<n_cols; i++)
-                    addReplyBulkCString(c, (char *)sqlite3_column_name(stmt, i));
-                rows_sent++;
-            }
             addReplyMultiBulkLen(c,n_cols);
             for (i=0; i<n_cols; i++) {
                 char *txt = (char *)sqlite3_column_text(stmt, i);
