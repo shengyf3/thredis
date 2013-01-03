@@ -556,13 +556,19 @@ void sqlCommand(redisClient *c) {
         int n_cols, i;
 
         if ((rc = sqlite3_prepare_v2(server.sql_db, sql, -1, &stmt, &leftover)) != SQLITE_OK)
-            continue;   /* possibly SQLITE_SCHEMA, try again */
+            continue;   /* possibly SQLITE_SCHEMA, try again, else will exit loop */
 
         if (!stmt) {    /* this happens for a comment or white-space */
             sql = leftover;
             continue;
         }
 
+        /* bind parameters, if any */
+        if (c->argc > 2)
+            for (i=2; i<c->argc; i++)
+                sqlite3_bind_text(stmt, i-1, c->argv[i]->ptr, sdslen(c->argv[i]->ptr), SQLITE_STATIC);
+
+        /* figure out which keys to lock by using this crazy hack */
         keys = scan_stmt_for_redis_vtabs(stmt, &n_keys);
         if (keys)
             lockKeys(server.sql_client, keys, n_keys);
