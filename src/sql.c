@@ -538,7 +538,7 @@ static robj **scan_stmt_for_redis_vtabs(sqlite3_stmt *stmt, int *n_keys) {
     return keys;
 }
 
-void sqlCommand(redisClient *c) {
+void sqlGenericCommand(redisClient *c, int prepare_only) {
     int rc = SQLITE_OK;
     const char *leftover;
     const char *sql = c->argv[1]->ptr;
@@ -563,16 +563,6 @@ void sqlCommand(redisClient *c) {
             continue;
         }
 
-        /* bind parameters, if any */
-        if (c->argc > 2)
-            for (i=2; i<c->argc; i++)
-                sqlite3_bind_text(stmt, i-1, c->argv[i]->ptr, sdslen(c->argv[i]->ptr), SQLITE_STATIC);
-
-        /* figure out which keys to lock by using this crazy hack */
-        keys = scan_stmt_for_redis_vtabs(stmt, &n_keys);
-        if (keys)
-            lockKeys(server.sql_client, keys, n_keys);
-
         n_cols = sqlite3_column_count(stmt);
 
         if (n_cols > 0) { /* write column names */
@@ -585,6 +575,23 @@ void sqlCommand(redisClient *c) {
             }
             rows_sent++;
         }
+
+        /* if this is a sqlprepare, there is nothing more to do. this
+         * is a hack, the real solution should cache the prepared
+         * statement locally in the connectinand bind parameters to it
+         * without preparing at subsequent SQL commands with the same
+         * statment. THREDIS TODO */
+        if (prepare_only) break;
+
+        /* bind parameters, if any */
+        if (c->argc > 2)
+            for (i=2; i<c->argc; i++)
+                sqlite3_bind_text(stmt, i-1, c->argv[i]->ptr, sdslen(c->argv[i]->ptr), SQLITE_STATIC);
+
+        /* figure out which keys to lock by using this crazy hack */
+        keys = scan_stmt_for_redis_vtabs(stmt, &n_keys);
+        if (keys)
+            lockKeys(server.sql_client, keys, n_keys);
 
         while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
             sqlite3_mutex_leave(sqlite3_db_mutex(server.sql_db));
@@ -619,6 +626,14 @@ void sqlCommand(redisClient *c) {
     pthread_mutex_unlock(server.lock);
 
     sqlite3_mutex_leave(sqlite3_db_mutex(server.sql_db));
+}
+
+void sqlCommand(redisClient *c) {
+    sqlGenericCommand(c, 0);
+}
+
+void sqlprepareCommand(redisClient *c) {
+    sqlGenericCommand(c, 1);
 }
 
 int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save) {

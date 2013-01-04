@@ -1211,6 +1211,7 @@ void bitopCommand(redisClient *c);
 void bitcountCommand(redisClient *c);
 void replconfCommand(redisClient *c);
 void sqlCommand(redisClient *c);
+void sqlprepareCommand(redisClient *c);
 void sqlsaveCommand(redisClient *c);
 
 #if defined(__GNUC__)

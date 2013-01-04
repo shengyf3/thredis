@@ -252,6 +252,7 @@ struct redisCommand redisCommandTable[] = {
     {"bitop",bitopCommand,-4,"wm",0,NULL,2,-1,1,0,0},
     {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0},
     {"sql",sqlCommand,-2,"wm",0,NULL,1,1,1,0,0},
+    {"sqlprepare",sqlprepareCommand,-2,"wm",0,NULL,1,1,1,0,0},
     {"sqlsave",sqlsaveCommand,1,"ar",0,NULL,0,0,0,0,0}
 };
 
