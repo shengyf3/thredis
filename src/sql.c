@@ -569,25 +569,61 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
             replylen = addDeferredMultiBulkLength(c);
             addReplyMultiBulkLen(c, n_cols);
             for (i=0; i<n_cols; i++) {
-                addReplyMultiBulkLen(c, 2);
-                addReplyBulkCString(c, (char *)sqlite3_column_name(stmt, i));
-                addReplyBulkCString(c, (char *)sqlite3_column_decltype(stmt, i));
+                char *type;
+                addReplyMultiBulkLen(c,2);
+                addReplyBulkCString(c,(char *)sqlite3_column_name(stmt,i));
+                if ((type = (char *)sqlite3_column_decltype(stmt,i)) != NULL)
+                    addReplyBulkCString(c,type);
+                else {
+                    switch (sqlite3_column_type(stmt, i)) {
+                    case SQLITE_INTEGER:
+                        addReplyBulkCString(c,"int");
+                        break;
+                    case SQLITE_FLOAT:
+                        addReplyBulkCString(c,"real");
+                        break;
+                    case SQLITE_BLOB:
+                        addReplyBulkCString(c,"blob");
+                        break;
+                    default:
+                        addReplyBulkCString(c,"text");
+                    }
+                }
             }
             rows_sent++;
         }
 
         /* if this is a sqlprepare, there is nothing more to do. this
          * is a hack, the real solution should cache the prepared
-         * statement locally in the connectinand bind parameters to it
+         * statement locally in the connection and bind parameters to it
          * without preparing at subsequent SQL commands with the same
          * statment. THREDIS TODO */
         if (prepare_only) break;
 
         /* bind parameters, if any */
         if (c->argc > 2)
-            for (i=2; i<c->argc; i++)
-                sqlite3_bind_text(stmt, i-1, c->argv[i]->ptr, sdslen(c->argv[i]->ptr), SQLITE_STATIC);
+            for (i=2; i<c->argc; i++) {
 
+                /* We need a way to pass a NULL here. We could use
+                 * Redis's bulk $-1, but that would be too radical of
+                 * a change to the protocol (currently only the server
+                 * can send a $-1, if client sends a $-1 it's an
+                 * error). We use ":NULL" to mean NULL, and for
+                 * anything else that begins with a ":" we drop the
+                 * first ":" */
+
+                if (sdslen(c->argv[i]->ptr) == 5 && !memcmp(c->argv[i]->ptr, ":NULL", 5))
+                    sqlite3_bind_null(stmt, i-1);
+                else if (sdslen(c->argv[i]->ptr) > 1 && ((char*)c->argv[i]->ptr)[0] == ':')
+                    sqlite3_bind_text(stmt, i-1, ((char*)c->argv[i]->ptr)+1, sdslen(c->argv[1]->ptr)-1, SQLITE_STATIC);
+                else {
+                    c->argv[i] = tryObjectEncoding(c->argv[i]);
+                    if (c->argv[i]->encoding == REDIS_ENCODING_RAW)
+                        sqlite3_bind_text(stmt, i-1, c->argv[i]->ptr, sdslen(c->argv[i]->ptr), SQLITE_STATIC);
+                    else
+                        sqlite3_bind_int64(stmt, i-1, (long)c->argv[i]->ptr);
+                }
+            }
         /* figure out which keys to lock by using this crazy hack */
         keys = scan_stmt_for_redis_vtabs(stmt, &n_keys);
         if (keys)
@@ -598,8 +634,15 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
 
             addReplyMultiBulkLen(c,n_cols);
             for (i=0; i<n_cols; i++) {
-                char *txt = (char *)sqlite3_column_text(stmt, i);
-                addReplyBulkCString(c, txt ? txt : "NULL");
+                if (sqlite3_column_type(stmt,i) == SQLITE_INTEGER)
+                    addReplyLongLong(c,sqlite3_column_int64(stmt,i));
+                else {
+                    char *txt = (char *)sqlite3_column_text(stmt,i);
+                    if (!txt)
+                        addReply(c,shared.nullbulk);
+                    else
+                        addReplyBulkCString(c,txt);
+                }
             }
             rows_sent++;
 
