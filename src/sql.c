@@ -641,7 +641,7 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
                     if (!txt)
                         addReply(c,shared.nullbulk);
                     else
-                        addReplyBulkCString(c,txt);
+                        addReplyBulkCBuffer(c,(void*)txt,sqlite3_column_bytes(stmt,i));
                 }
             }
             rows_sent++;
