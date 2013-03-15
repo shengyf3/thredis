@@ -248,7 +248,7 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
     {
         if (cmd)
             luaPushError(lua,
-                "Wrong number of args calling Redis command From Lua script");
+               "Wrong number of args calling Redis command From Lua script");
         else
             luaPushError(lua,"Unknown Redis command called from Lua script");
         goto cleanup;
