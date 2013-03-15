@@ -22,6 +22,9 @@ STD= -std=c99 -pedantic
 WARN= -Wall
 OPT= $(OPTIMIZATION)
 
+# Enable SQLite3 unlock notify
+SQLITE_FLAGS= -DSQLITE_ENABLE_UNLOCK_NOTIFY=1 -DSQLITE_USE_URI=1
+
 # Default allocator
 ifeq ($(uname_S),Linux)
   MALLOC=jemalloc
@@ -46,12 +49,12 @@ endif
 -include .make-settings
 
 ifeq ($(uname_S),SunOS)
-  FINAL_CFLAGS= $(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS) -D__EXTENSIONS__ -D_XPG6
+  FINAL_CFLAGS= $(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(SQLITE_FLAGS) $(REDIS_CFLAGS) -D__EXTENSIONS__ -D_XPG6
   FINAL_LDFLAGS= $(LDFLAGS) $(REDIS_LDFLAGS) -g -ggdb
   FINAL_LIBS= -ldl -lnsl -lsocket -lm -lpthread
   DEBUG= -g -ggdb
 else
-  FINAL_CFLAGS= $(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS)
+  FINAL_CFLAGS= $(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(SQLITE_FLAGS) $(REDIS_CFLAGS)
   FINAL_LDFLAGS= $(LDFLAGS) $(REDIS_LDFLAGS) -g -rdynamic -ggdb
   FINAL_LIBS= -lm -pthread
   DEBUG= -g -rdynamic -ggdb
@@ -131,6 +134,7 @@ persist-settings: distclean
 	echo MALLOC=$(MALLOC) >> .make-settings
 	echo CFLAGS=$(CFLAGS) >> .make-settings
 	echo LDFLAGS=$(LDFLAGS) >> .make-settings
+	echo SQLITE_FLAGS=$(SQLITE_FLAGS) >> .make-settings
 	echo REDIS_CFLAGS=$(REDIS_CFLAGS) >> .make-settings
 	echo REDIS_LDFLAGS=$(REDIS_LDFLAGS) >> .make-settings
 	echo PREV_FINAL_CFLAGS=$(FINAL_CFLAGS) >> .make-settings

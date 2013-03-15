@@ -108,11 +108,14 @@ redisClient *createClient(int fd) {
     pthread_mutex_init(c->lock, NULL);
     c->refcount = 0;
     c->busy = 0;
-    if (fd != -1)
+    if (fd != -1) {
         scriptingInit(c);
-    else {
+        sqlClientInit(c);
+    } else {
         c->lua = NULL;
         c->lua_client = NULL;
+        c->sql_db = NULL;
+        c->sql_client = NULL;
     }
     c->lua_time_start = 0;
     
@@ -631,7 +634,7 @@ void deallocateClient(redisClient *c) {
     dictRelease(c->pubsub_channels);
     listRelease(c->pubsub_patterns);
     /* Obvious cleanup */
-    //aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
+    sqlClientClose(c);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     listRelease(c->reply);
     freeClientArgv(c);
@@ -693,7 +696,7 @@ void deallocateClient(redisClient *c) {
 }
 
 void freeClient(redisClient *c) {
-    aeDeleteFileEvent(server.el,c->fd,AE_READABLE); // THREDIS TODO - is this right?
+    aeDeleteFileEvent(server.el,c->fd,AE_READABLE); /* stop reading right away */
     if (c->refcount <= 1)
         deallocateClient(c);
     else

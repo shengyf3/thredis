@@ -429,8 +429,10 @@ typedef struct redisClient {
     int refcount;
     int busy;
     struct redisClient *lua_client;   /* The "fake client" to query Redis from Lua */
-    lua_State *lua;   /* The Lua interpreter for this client */
-    long long lua_time_start;  /* Start time of script */
+    lua_State *lua;                   /* The Lua interpreter for this client */
+    long long lua_time_start;         /* Start time of script */
+    sqlite3 *sql_db;                  /* SQLite db */
+    struct redisClient *sql_client;   /* The "fake client" to query Redis from SQL */
 } redisClient;
 
 struct saveparam {
@@ -677,7 +679,6 @@ struct redisServer {
     int locking_mode;        /* if this is 0, locking should be unnecessary */
 
     sqlite3 *sql_db;                  /* SQLite db */
-    struct redisClient *sql_client;   /* The "fake client" to query Redis from SQLite */
     char *sql_filename;               /* Name of SQL dump file */
 };
 
@@ -1061,6 +1062,8 @@ void scriptingRelease(redisClient *c);
 
 /* SQLite */
 void sqlInit(void);
+void sqlClientInit(redisClient *c);
+void sqlClientClose(redisClient *c);
 int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save);
 
 /* Git SHA1 */

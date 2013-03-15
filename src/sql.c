@@ -27,8 +27,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include "redis.h"
 #include "sqlite3.h"
+
+#include <assert.h>
 
 #define REDIS_VTAB_MAGIC 12122012
 
@@ -301,21 +304,19 @@ static int vt_rowid(sqlite3_vtab_cursor *s3_cur, sqlite_int64 *p_rowid) {
 static int vt_filter( sqlite3_vtab_cursor *s3_cur,
                       int idxNum, const char *idxStr,
                       int argc, sqlite3_value **argv ) {
-    robj *o;
     redis_cursor *cur = (redis_cursor*)s3_cur;
 
-    if ((o = lookupKeyRead(server.sql_client->db, cur->name)) == NULL) {
+    if ((cur->robj = lookupKeyRead(&server.db[0], cur->name)) == NULL) {
         /* non-existent redis object will simply result in an empty set */
         cur->eof = 1;
         return SQLITE_OK;
     }
-    cur->robj = o;
     cur->eof = 0;
 
-    if (o->type == REDIS_LIST) {
+    if (cur->robj->type == REDIS_LIST) {
         cur->iter.list.le = zmalloc(sizeof(listTypeEntry));
         cur->iter.list.li = listTypeInitIterator(cur->robj,0,REDIS_TAIL);
-    } else if (o->type == REDIS_ZSET || o->type == REDIS_SET) {
+    } else if (cur->robj->type == REDIS_ZSET || cur->robj->type == REDIS_SET) {
         cur->iter.zset.zi = zcalloc(sizeof(zsetopsrc));
         cur->iter.zset.zv = zcalloc(sizeof(zsetopval));
         cur->iter.zset.zi->subject = cur->robj;
@@ -370,7 +371,7 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
     robj **argv;
     struct redisCommand *cmd;
     sds reply, sql_reply;
-    redisClient *c = (redisClient *)sqlite3_user_data(ctx);
+    redisClient *c = ((redisClient *)sqlite3_user_data(ctx))->sql_client;
 
     /* require at least one argument */
     if (argc == 0) {
@@ -405,7 +406,7 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
     }
 
     /* same rule as Lua + no db switching + sql itself*/
-    // ZZZ perhaps Lua *should* be allowed?
+    // THREDIS TODO perhaps Lua *should* be allowed?
     if (cmd->flags & REDIS_CMD_NOSCRIPT ||
         cmd->proc == selectCommand || cmd->proc == sqlCommand) {
         sqlite3_result_error(ctx, "This Redis command is not allowed from SQL", -1);
@@ -437,7 +438,7 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
     c->cmd = cmd;
     call(c,REDIS_CALL_SLOWLOG | REDIS_CALL_STATS);
 
-    //ZZZ convert result to a suitable type
+    // THREDIS TODO convert result to a suitable type, e.g. json
     reply = sdsempty();
     if (c->bufpos) {
         reply = sdscatlen(reply,c->buf,c->bufpos);
@@ -461,17 +462,34 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
 
 /* initialize the SQLite in-memory database */
 void sqlInit(void) {
-    if (sqlite3_open_v2(":memory:", &server.sql_db, 
-                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, 
+    if (sqlite3_open_v2("file::memory:?cache=shared", &server.sql_db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
                         NULL)) {
         redisLog(REDIS_WARNING, "Could not initialize SQLite database, exiting.");
         exit(1);
     }
-    server.sql_client = createClient(-1);
-    server.sql_client->flags |= REDIS_SQLITE_CLIENT;
+}
 
-    sqlite3_create_function(server.sql_db, "redis", -1, SQLITE_ANY, (void*)server.sql_client, redis_func, NULL, NULL);
-    sqlite3_create_module(server.sql_db, "redis", &redis_module, NULL);
+/* initialize the per-client SQLite in-memory database connection */
+void sqlClientInit(redisClient *c) {
+    if (sqlite3_open_v2("file::memory:?cache=shared", &c->sql_db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
+                        NULL)) {
+        redisLog(REDIS_WARNING, "Could not create SQLite database connection, exiting.");
+        exit(1);
+    }
+    c->sql_client = createClient(-1);
+    c->sql_client->flags |= REDIS_SQLITE_CLIENT;
+
+    sqlite3_create_function(c->sql_db, "redis", -1, SQLITE_ANY, (void*)c, redis_func, NULL, NULL);
+    sqlite3_create_module(c->sql_db, "redis", &redis_module, NULL);
+}
+
+/* close per-client SQLite in-memory database connection */
+void sqlClientClose(redisClient *c) {
+    if (sqlite3_close_v2(c->sql_db) != SQLITE_OK)
+        redisLog(REDIS_WARNING, "Call to sqlite3_close_v2() failed.");
+    zfree(c->sql_client);
 }
 
 /* These are necessary to scan Vdbe ops in the SQLite statement. Vdbe
@@ -538,6 +556,132 @@ static robj **scan_stmt_for_redis_vtabs(sqlite3_stmt *stmt, int *n_keys) {
     return keys;
 }
 
+/******************************************************
+ *  The following is taken from:
+ * http://www.sqlite.org/unlock_notify.html - we prefer that our
+ * functions blocked when lock is not available.
+ */
+/*
+** A pointer to an instance of this structure is passed as the user-context
+** pointer when registering for an unlock-notify callback.
+*/
+typedef struct UnlockNotification UnlockNotification;
+struct UnlockNotification {
+    int fired;                         /* True after unlock event has occurred */
+    pthread_cond_t cond;               /* Condition variable to wait on */
+    pthread_mutex_t mutex;             /* Mutex to protect structure */
+};
+/*
+** This function is an unlock-notify callback registered with SQLite.
+*/
+static void unlock_notify_cb(void **apArg, int nArg){
+    int i;
+    for(i=0; i<nArg; i++){
+        UnlockNotification *p = (UnlockNotification *)apArg[i];
+        pthread_mutex_lock(&p->mutex);
+        p->fired = 1;
+        pthread_cond_signal(&p->cond);
+        pthread_mutex_unlock(&p->mutex);
+    }
+}
+/*
+** This function assumes that an SQLite API call (either sqlite3_prepare_v2()
+** or sqlite3_step()) has just returned SQLITE_LOCKED. The argument is the
+** associated database connection.
+**
+** This function calls sqlite3_unlock_notify() to register for an
+** unlock-notify callback, then blocks until that callback is delivered
+** and returns SQLITE_OK. The caller should then retry the failed operation.
+**
+** Or, if sqlite3_unlock_notify() indicates that to block would deadlock
+** the system, then this function returns SQLITE_LOCKED immediately. In
+** this case the caller should not retry the operation and should roll
+** back the current transaction (if any).
+*/
+static int wait_for_unlock_notify(sqlite3 *db){
+    int rc;
+    UnlockNotification un;
+
+    /* Initialize the UnlockNotification structure. */
+    un.fired = 0;
+    pthread_mutex_init(&un.mutex, 0);
+    pthread_cond_init(&un.cond, 0);
+
+    /* Register for an unlock-notify callback. */
+    rc = sqlite3_unlock_notify(db, unlock_notify_cb, (void *)&un);
+    assert( rc==SQLITE_LOCKED || rc==SQLITE_OK );
+
+    /* The call to sqlite3_unlock_notify() always returns either SQLITE_LOCKED
+    ** or SQLITE_OK.
+    **
+    ** If SQLITE_LOCKED was returned, then the system is deadlocked. In this
+    ** case this function needs to return SQLITE_LOCKED to the caller so
+    ** that the current transaction can be rolled back. Otherwise, block
+    ** until the unlock-notify callback is invoked, then return SQLITE_OK.
+    */
+    if( rc==SQLITE_OK ){
+        pthread_mutex_lock(&un.mutex);
+        if( !un.fired ){
+            pthread_cond_wait(&un.cond, &un.mutex);
+        }
+        pthread_mutex_unlock(&un.mutex);
+    }
+
+    /* Destroy the mutex and condition variables. */
+    pthread_cond_destroy(&un.cond);
+    pthread_mutex_destroy(&un.mutex);
+
+    return rc;
+}
+/*
+** This function is a wrapper around the SQLite function sqlite3_step().
+** It functions in the same way as step(), except that if a required
+** shared-cache lock cannot be obtained, this function may block waiting for
+** the lock to become available. In this scenario the normal API step()
+** function always returns SQLITE_LOCKED.
+**
+** If this function returns SQLITE_LOCKED, the caller should rollback
+** the current transaction (if any) and try again later. Otherwise, the
+** system may become deadlocked.
+*/
+int sqlite3_blocking_step(sqlite3_stmt *pStmt){
+    int rc;
+    while( SQLITE_LOCKED==(rc = sqlite3_step(pStmt)) ){
+        rc = wait_for_unlock_notify(sqlite3_db_handle(pStmt));
+        if( rc!=SQLITE_OK ) break;
+        sqlite3_reset(pStmt);
+    }
+    return rc;
+}
+/*
+** This function is a wrapper around the SQLite function sqlite3_prepare_v2().
+** It functions in the same way as prepare_v2(), except that if a required
+** shared-cache lock cannot be obtained, this function may block waiting for
+** the lock to become available. In this scenario the normal API prepare_v2()
+** function always returns SQLITE_LOCKED.
+**
+** If this function returns SQLITE_LOCKED, the caller should rollback
+** the current transaction (if any) and try again later. Otherwise, the
+** system may become deadlocked.
+*/
+int sqlite3_blocking_prepare_v2(
+    sqlite3 *db,              /* Database handle. */
+    const char *zSql,         /* UTF-8 encoded SQL statement. */
+    int nSql,                 /* Length of zSql in bytes. */
+    sqlite3_stmt **ppStmt,    /* OUT: A pointer to the prepared statement */
+    const char **pz           /* OUT: End of parsed string */
+    ){
+    int rc;
+    while( SQLITE_LOCKED==(rc = sqlite3_prepare_v2(db, zSql, nSql, ppStmt, pz)) ){
+        rc = wait_for_unlock_notify(db);
+        if( rc!=SQLITE_OK ) break;
+    }
+    return rc;
+}
+/******************************************************
+ * End of stuff from http://www.sqlite.org/unlock_notify.html
+ */
+
 void sqlGenericCommand(redisClient *c, int prepare_only) {
     int rc = SQLITE_OK;
     const char *leftover;
@@ -549,13 +693,13 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
     int n_keys = 0;
     int retries = 0;
 
-    /* sadly this is the only way to get enlish errors. THREDIS TODO - could we skip this? */
-    sqlite3_mutex_enter(sqlite3_db_mutex(server.sql_db));
+    /* this is necessary to get enlish errors, see http://www.sqlite.org/c3ref/errcode.html */
+    sqlite3_mutex_enter(sqlite3_db_mutex(c->sql_db));
 
     while ((rc==SQLITE_OK || (rc==SQLITE_SCHEMA && (++retries)<2)) && sql[0]) {
         int n_cols, i;
 
-        if ((rc = sqlite3_prepare_v2(server.sql_db, sql, -1, &stmt, &leftover)) != SQLITE_OK)
+        if ((rc = sqlite3_blocking_prepare_v2(c->sql_db, sql, -1, &stmt, &leftover)) != SQLITE_OK)
             continue;   /* possibly SQLITE_SCHEMA, try again, else will exit loop */
 
         if (!stmt) {    /* this happens for a comment or white-space */
@@ -627,10 +771,10 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
         /* figure out which keys to lock by using this crazy hack */
         keys = scan_stmt_for_redis_vtabs(stmt, &n_keys);
         if (keys)
-            lockKeys(server.sql_client, keys, n_keys);
+            lockKeys(c, keys, n_keys);
 
-        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            sqlite3_mutex_leave(sqlite3_db_mutex(server.sql_db));
+        while ((rc = sqlite3_blocking_step(stmt)) == SQLITE_ROW) {
+            sqlite3_mutex_leave(sqlite3_db_mutex(c->sql_db));
 
             addReplyMultiBulkLen(c,n_cols);
             for (i=0; i<n_cols; i++) {
@@ -646,29 +790,29 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
             }
             rows_sent++;
 
-            sqlite3_mutex_enter(sqlite3_db_mutex(server.sql_db));
+            sqlite3_mutex_enter(sqlite3_db_mutex(c->sql_db));
         }
     }
 
     if (stmt) sqlite3_finalize(stmt);
 
     if (keys) {
-        unlockKeys(server.sql_client, keys, n_keys);
+        unlockKeys(c, keys, n_keys);
         zfree(keys);
     }
 
     if (rc != SQLITE_OK && rc != SQLITE_DONE)
-        addReplyErrorFormat(c,"SQL error: %s\n",sqlite3_errmsg(server.sql_db));
+        addReplyErrorFormat(c,"SQL error: %s\n",sqlite3_errmsg(c->sql_db));
     else if (rows_sent > 0)
         setDeferredMultiBulkLength(c,replylen,rows_sent);
     else
         addReply(c, shared.ok);
 
     pthread_mutex_lock(server.lock);
-    server.dirty += sqlite3_changes(server.sql_db);
+    server.dirty += sqlite3_changes(c->sql_db);
     pthread_mutex_unlock(server.lock);
 
-    sqlite3_mutex_leave(sqlite3_db_mutex(server.sql_db));
+    sqlite3_mutex_leave(sqlite3_db_mutex(c->sql_db));
 }
 
 void sqlCommand(redisClient *c) {
@@ -788,7 +932,7 @@ char *redisProtocolToSQLType_MultiBulk(sqlite3_context *ctx, sds *sql_reply, cha
         /* NULL - do nothing */
         return p;
     }
-    // ZZZ This could be Json-encoded for realz
+    // THREDIS TODO This could be Json-encoded for realz
     if (mbulklen>1)
         *sql_reply = sdscatlen(*sql_reply,"[",1);
     for (j = 0; j < mbulklen; j++) {

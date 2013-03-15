@@ -24,11 +24,11 @@ start_server {tags {"repl"}} {
 
         test {Test replication with parallel clients writing in differnet DBs} {
             lappend slave [srv 0 client]
-            after 5000
+            after 10000
             stop_bg_complex_data $load_handle0
             stop_bg_complex_data $load_handle1
             stop_bg_complex_data $load_handle2
-            set retry 10
+            set retry 100
             while {$retry && ([$master debug digest] ne [$slave debug digest])}\
             {
                 after 1000
