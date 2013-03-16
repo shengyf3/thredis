@@ -1016,7 +1016,7 @@ int processMultibulkBuffer(redisClient *c) {
 
 void processInputBuffer(redisClient *c) {
     /* Keep processing while there is something in the input buffer */
-    while(sdslen(c->querybuf)) {
+    while(c->querybuf && sdslen(c->querybuf)) {
 
         /* Immediately abort if the client is in the middle of something. */
         if (c->flags & REDIS_BLOCKED) {

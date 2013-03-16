@@ -1535,12 +1535,13 @@ void call(redisClient *c, int flags) {
     {
         replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
     }
-    pthread_mutex_unlock(server.lock);
 
     /* Call the command. */
-    redisOpArrayInit(&server.also_propagate); // THREDIS TODO - is this a problem?
+    redisOpArrayInit(&server.also_propagate);
     dirty = server.dirty;
+    pthread_mutex_unlock(server.lock);
     c->cmd->proc(c);
+    pthread_mutex_lock(server.lock);
     dirty = server.dirty-dirty;
     duration = ustime()-start;
 
@@ -1582,6 +1583,7 @@ void call(redisClient *c, int flags) {
         redisOpArrayFree(&server.also_propagate);
     }
     server.stat_numcommands++;
+    pthread_mutex_unlock(server.lock);
 }
 
 int timedEventProcessInputBufferHandler(aeEventLoop *el, long long id, void *clientData) {

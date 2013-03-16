@@ -153,10 +153,9 @@ robj *dbRandomKey(redisDb *db) {
         key = dictGetKey(de);
         keyobj = createStringObject(key,sdslen(key));
         if (dictFind(db->expires,key)) {
-            if (expireIfNeeded(db,keyobj)) {
-                decrRefCount(keyobj);
-                continue; /* search for another key. This expired. */
-            }
+            /* search for another key. This expired. */
+            decrRefCount(keyobj);
+            continue;
         }
         pthread_mutex_unlock(db->lock);
         return keyobj;
