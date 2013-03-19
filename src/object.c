@@ -212,13 +212,17 @@ void freeHashObject(robj *o) {
 }
 
 void incrRefCount(robj *o) {
+    pthread_mutex_lock(ref_lock);
     o->refcount++;
+    pthread_mutex_unlock(ref_lock);
 }
 
 void decrRefCount(void *obj) {
     robj *o = obj;
+    pthread_mutex_lock(ref_lock);
     if (o->refcount <= 0) redisPanic("decrRefCount against refcount <= 0");
     if (o->refcount == 1) {
+        pthread_mutex_unlock(ref_lock);
         switch(o->type) {
         case REDIS_STRING: freeStringObject(o); break;
         case REDIS_LIST: freeListObject(o); break;
@@ -230,6 +234,7 @@ void decrRefCount(void *obj) {
         zfree(o);
     } else {
         o->refcount--;
+        pthread_mutex_unlock(ref_lock);
     }
 }
 

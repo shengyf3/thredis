@@ -428,6 +428,7 @@ typedef struct redisClient {
     pthread_mutex_t *lock;
     int refcount;
     int busy;
+    long long time_event_id;          /* aeCreateTimeEvent id */
     struct redisClient *lua_client;   /* The "fake client" to query Redis from Lua */
     lua_State *lua;                   /* The Lua interpreter for this client */
     long long lua_time_start;         /* Start time of script */
@@ -767,6 +768,7 @@ typedef struct {
  * Extern declarations
  *----------------------------------------------------------------------------*/
 
+extern pthread_mutex_t *ref_lock;
 extern struct redisServer server;
 extern struct sharedObjectsStruct shared;
 extern dictType setDictType;

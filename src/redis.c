@@ -63,6 +63,7 @@ double R_Zero, R_PosInf, R_NegInf, R_Nan;
 /*================================= Globals ================================= */
 
 /* Global vars */
+pthread_mutex_t *ref_lock; /* incr/decrRef lock */
 struct redisServer server; /* server global state */
 struct redisCommand *commandTable;
 
@@ -1586,18 +1587,20 @@ void call(redisClient *c, int flags) {
     pthread_mutex_unlock(server.lock);
 }
 
-int timedEventProcessInputBufferHandler(aeEventLoop *el, long long id, void *clientData) {
+int timeEventProcessInputBufferHandler(aeEventLoop *el, long long id, void *clientData) {
     redisClient *c = (redisClient *) clientData;
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(id);
 
-    if (!pthread_mutex_trylock(c->lock)) {
+    if (c->lock && !pthread_mutex_trylock(c->lock)) {
         server.locking_mode--;
         redisAssertWithInfo(c,NULL,server.locking_mode >= 0);
 
         /* process next command, if any... */
         processInputBuffer(c);
+        pthread_mutex_lock(ref_lock);
         c->refcount--;
+        pthread_mutex_unlock(ref_lock);
         return AE_NOMORE;
     }
     else
@@ -1618,12 +1621,14 @@ void callCommandAndResetClient(redisClient *c) {
         handleClientsBlockedOnLists();
     pthread_mutex_unlock(server.lock);
 
-    /* We are in a thread. Create a timedEvent (which will run in the
+    /* We are in a thread. Create a timeEvent (which will run in the
      * main loop) to check if there are more pipelined commands to
      * process. */
-    pthread_mutex_lock(server.el->lock);
+    pthread_mutex_lock(ref_lock);
     c->refcount++;
-    aeCreateTimeEvent(server.el, 0, timedEventProcessInputBufferHandler, (void *) c, NULL);
+    pthread_mutex_unlock(ref_lock);
+    pthread_mutex_lock(server.el->lock);
+    c->time_event_id = aeCreateTimeEvent(server.el, 0, timeEventProcessInputBufferHandler, (void *)c, NULL);
     pthread_mutex_unlock(server.el->lock);
 
     /* reset client and unlock */
@@ -1760,7 +1765,9 @@ int processCommand(redisClient *c) {
             p == zremrangebyscoreCommand || p == zrevrangeCommand ||
             p == zrevrangebyscoreCommand || p == zunionstoreCommand) {
 
+            pthread_mutex_lock(ref_lock);
             c->refcount++;
+            pthread_mutex_unlock(ref_lock);
             server.locking_mode++;
             threadpool_add(server.tpool, (void (*)(void *)) callCommandAndResetClient, (void *)c, 0);
             return REDIS_ADDED_TO_THREAD;
@@ -2867,6 +2874,8 @@ int main(int argc, char **argv) {
     /* We need to initialize our libraries, and the server configuration. */
     zmalloc_enable_thread_safeness();
     zmalloc_set_oom_handler(redisOutOfMemoryHandler);
+    ref_lock = zmalloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(ref_lock, NULL);
     srand(time(NULL)^getpid());
     gettimeofday(&tv,NULL);
     dictSetHashFunctionSeed(tv.tv_sec^tv.tv_usec^getpid());
