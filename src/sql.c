@@ -805,8 +805,8 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
         addReplyErrorFormat(c,"SQL error: %s\n",sqlite3_errmsg(c->sql_db));
     else if (rows_sent > 0)
         setDeferredMultiBulkLength(c,replylen,rows_sent);
-    else
-        addReply(c, shared.ok);
+    else /* number of affected rows */
+        addReplyLongLong(c,sqlite3_changes(c->sql_db));
 
     pthread_mutex_lock(server.lock);
     server.dirty += sqlite3_changes(c->sql_db);
