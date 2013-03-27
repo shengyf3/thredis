@@ -462,6 +462,7 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
 
 /* initialize the SQLite in-memory database */
 void sqlInit(void) {
+    sqlite3_enable_shared_cache(1); /* for some reason this makes a difference, even though we use the flags below */
     if (sqlite3_open_v2("file::memory:?cache=shared", &server.sql_db,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
                         NULL)) {
