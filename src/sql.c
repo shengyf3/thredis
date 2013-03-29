@@ -802,15 +802,19 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
         zfree(keys);
     }
 
-    if (rc != SQLITE_OK && rc != SQLITE_DONE)
+    if (rc != SQLITE_OK && rc != SQLITE_DONE) {
+        if (replylen) /* clear the whole reply list */
+            while(listLength(c->reply))
+                listDelNode(c->reply,listFirst(c->reply));
         addReplyErrorFormat(c,"SQL error: %s\n",sqlite3_errmsg(c->sql_db));
+    }
     else if (rows_sent > 0)
         setDeferredMultiBulkLength(c,replylen,rows_sent);
     else /* number of affected rows */
         addReplyLongLong(c,sqlite3_changes(c->sql_db));
 
     pthread_mutex_lock(server.lock);
-    server.dirty += sqlite3_changes(c->sql_db);
+    server.dirty += sqlite3_changes(c->sql_db); /* THREDIS TODO: if this transaction is rolled back, this is wrong */
     pthread_mutex_unlock(server.lock);
 
     sqlite3_mutex_leave(sqlite3_db_mutex(c->sql_db));
@@ -843,7 +847,14 @@ int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save) {
 
         backup = sqlite3_backup_init(to, "main", from, "main");
         if (backup) {
-            sqlite3_backup_step(backup, -1);
+            do {
+                rc = sqlite3_backup_step(backup, 4096);
+                if (rc==SQLITE_BUSY || rc==SQLITE_LOCKED) {
+                    /* the db should be under exclusive transaction lock at this point */
+                    redisLog(REDIS_WARNING, "sqlite3_backup_step returned BUSY or LOCKED, aborting.");
+                    break; /* alternatively we could sqlite3_sleep() and try again */
+                }
+            } while(rc==SQLITE_OK || rc==SQLITE_BUSY || rc==SQLITE_LOCKED);
             sqlite3_backup_finish(backup);
         }
         rc = sqlite3_errcode(to);
@@ -947,3 +958,12 @@ char *redisProtocolToSQLType_MultiBulk(sqlite3_context *ctx, sds *sql_reply, cha
     return p;
 }
 
+int sqlExclusiveLock(void) {
+    /* it was tempting to make this call blocking, but that was wrong, because
+       it lead to an easy deadlock if the main loop is blocked on it */
+    return sqlite3_exec(server.sql_db, "BEGIN EXCLUSIVE TRANSACTION", 0, 0, 0);
+}
+
+int sqlExclusiveUnlock(void) {
+    return sqlite3_exec(server.sql_db, "END TRANSACTION", 0, 0, 0);
+}

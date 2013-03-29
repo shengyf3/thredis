@@ -1067,6 +1067,8 @@ void sqlInit(void);
 void sqlClientInit(redisClient *c);
 void sqlClientClose(redisClient *c);
 int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save);
+int sqlExclusiveLock(void);
+int sqlExclusiveUnlock(void);
 
 /* Git SHA1 */
 char *redisGitSHA1(void);

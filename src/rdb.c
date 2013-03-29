@@ -721,6 +721,12 @@ int rdbSaveBackground(char *filename) {
 
     if (server.rdb_child_pid != -1) return REDIS_ERR;
 
+    /* make sure the sqldb is not locked BEFORE we fork */
+    if (sqlExclusiveLock()) {
+        redisLog(REDIS_WARNING,"Can't save in background: failed to obtain exclusive SQL lock.");
+        return REDIS_ERR;
+    }
+
     server.dirty_before_bgsave = server.dirty;
 
     start = ustime();
@@ -732,11 +738,14 @@ int rdbSaveBackground(char *filename) {
         if (server.sofd > 0) close(server.sofd);
         retval = rdbSave(filename);
         if (retval == REDIS_OK)
-            retval = (loadOrSaveDb(server.sql_db, server.sql_filename, 1) != SQLITE_OK);
+            if (!(retval = sqlExclusiveUnlock()))
+                retval = (loadOrSaveDb(server.sql_db, server.sql_filename, 1) != SQLITE_OK);
         exitFromChild((retval == REDIS_OK) ? 0 : 1);
     } else {
         /* Parent */
         server.stat_fork_time = ustime()-start;
+        if (sqlExclusiveUnlock())
+            redisPanic("Error releasing exclusive lock in rdbSaveBackground()");
         if (childpid == -1) {
             redisLog(REDIS_WARNING,"Can't save in background: fork: %s",
                 strerror(errno));
