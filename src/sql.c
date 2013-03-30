@@ -862,10 +862,14 @@ int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save) {
 
     sqlite3_close(file);
 
-    if (rc == SQLITE_OK)
-        redisLog(REDIS_NOTICE,"SQL DB saved on disk");
-    else
-        redisLog(REDIS_WARNING, "Error saving SQL DB on disk: %s", strerror(errno));
+    if (rc == SQLITE_OK) {
+        if (is_save)
+            redisLog(REDIS_NOTICE,"SQL DB [%s] saved on disk", filename);
+    } else
+        if (is_save)
+            redisLog(REDIS_WARNING, "Error saving SQL DB [%s] on disk: %s", filename, strerror(errno));
+        else
+            redisLog(REDIS_WARNING, "Error loading SQL DB [%s] from disk: %s", filename, strerror(errno));
 
     /* SQLITE_OK and REDIS_OK are the same value: 0 */
     return rc;
