@@ -469,6 +469,7 @@ void sqlInit(void) {
         redisLog(REDIS_WARNING, "Could not initialize SQLite database, exiting.");
         exit(1);
     }
+    server.sql_threads = 0;
 }
 
 /* initialize the per-client SQLite in-memory database connection */
@@ -694,6 +695,18 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
     int n_keys = 0;
     int retries = 0;
 
+    pthread_mutex_lock(server.lock);
+    if (server.sql_threads+2 >= server.threadpool_size) {
+        redisLog(REDIS_WARNING, "Error: not enough threads for sql command, increase threadpool_size in config. [sql threads: %d, pool size %d].",
+                 server.sql_threads,server.threadpool_size);
+        addReplyErrorFormat(c, "Error: not enough threads for sql command, increase threadpool_size.");
+        pthread_mutex_unlock(server.lock);
+        return;
+    } else {
+        server.sql_threads++;
+        pthread_mutex_unlock(server.lock);
+    }
+
     /* this is necessary to get enlish errors, see http://www.sqlite.org/c3ref/errcode.html */
     sqlite3_mutex_enter(sqlite3_db_mutex(c->sql_db));
 
@@ -813,11 +826,14 @@ void sqlGenericCommand(redisClient *c, int prepare_only) {
     else /* number of affected rows */
         addReplyLongLong(c,sqlite3_changes(c->sql_db));
 
+    sqlite3_mutex_leave(sqlite3_db_mutex(c->sql_db));
+
     pthread_mutex_lock(server.lock);
+    redisAssert(server.sql_threads > 0);
+    server.sql_threads--;
     server.dirty += sqlite3_changes(c->sql_db); /* THREDIS TODO: if this transaction is rolled back, this is wrong */
     pthread_mutex_unlock(server.lock);
 
-    sqlite3_mutex_leave(sqlite3_db_mutex(c->sql_db));
 }
 
 void sqlCommand(redisClient *c) {

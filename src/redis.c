@@ -1371,7 +1371,7 @@ void initServer() {
     }
 
     if (server.threadpool_size == -1)
-        if ((server.threadpool_size = getNumCPUs()) <= 0)
+        if ((server.threadpool_size = (getNumCPUs()*2)) < REDIS_THREADPOOL_DEFAULT_SIZE)
             server.threadpool_size = REDIS_THREADPOOL_DEFAULT_SIZE;
     redisLog(REDIS_NOTICE,"Starting %d worker threads with a threadpool queue of size %d.", server.threadpool_size, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE);
     server.tpool = threadpool_create(server.threadpool_size, REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE, 0); // THREDIS TODO - queue size should be configurable

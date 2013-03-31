@@ -293,7 +293,7 @@
 #define REDIS_PROPAGATE_REPL 2
 
 /* Threads */
-#define REDIS_THREADPOOL_DEFAULT_SIZE 4
+#define REDIS_THREADPOOL_DEFAULT_SIZE 8
 #define REDIS_THREADPOOL_MAX_SIZE 1024
 #define REDIS_THREADPOOL_DEFAULT_QUEUE_SIZE 1024
 
@@ -680,6 +680,7 @@ struct redisServer {
     int locking_mode;        /* if this is 0, locking should be unnecessary */
 
     sqlite3 *sql_db;                  /* SQLite db */
+    int sql_threads;
     char *sql_filename;               /* Name of SQL dump file */
 };
 
