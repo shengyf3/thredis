@@ -460,8 +460,48 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
     pthread_mutex_unlock(c->lock);
 }
 
+//ZZZ this would be in a header of some kind:
+int rcacheInit(void *NotUsed);
+void rcacheShutdown(void *NotUsed);
+sqlite3_pcache *rcacheCreate(int szPage, int szExtra, int bPurgeable);
+void rcacheCachesize(sqlite3_pcache *p, int nMax);
+int rcachePagecount(sqlite3_pcache *p);
+sqlite3_pcache_page *rcacheFetch(sqlite3_pcache *p, unsigned int iKey, int createFlag);
+void rcacheUnpin(sqlite3_pcache *p, sqlite3_pcache_page *pPg, int reuseUnlikely);
+void rcacheRekey(sqlite3_pcache *p, sqlite3_pcache_page *pPg, unsigned int iOld, unsigned int iNew);
+void rcacheTruncate(sqlite3_pcache *p, unsigned int iLimit);
+void rcacheDestroy(sqlite3_pcache *p);
+void rcacheShrink(sqlite3_pcache *p);
+//ZZZ
+
 /* initialize the SQLite in-memory database */
 void sqlInit(void) {
+
+    // so this would be the right place to call sqlite3_config(). Where is it called in sqlite?
+
+    // NEXT - we know what to do! DO IT!
+
+    // ALSO - SQLITE_CONFIG_MALLOC is the way to make it use zmalloc
+
+  static const sqlite3_pcache_methods2 defaultMethods = {
+    1,                       /* iVersion */
+    0,                       /* pArg */
+    rcacheInit,             /* xInit */
+    rcacheShutdown,         /* xShutdown */
+    rcacheCreate,           /* xCreate */
+    rcacheCachesize,        /* xCachesize */
+    rcachePagecount,        /* xPagecount */
+    rcacheFetch,            /* xFetch */
+    rcacheUnpin,            /* xUnpin */
+    rcacheRekey,            /* xRekey */
+    rcacheTruncate,         /* xTruncate */
+    rcacheDestroy,          /* xDestroy */
+    rcacheShrink            /* xShrink */
+  };
+  sqlite3_config(SQLITE_CONFIG_PCACHE2, &defaultMethods);
+
+
+    printf("ZZZ in sqlInit()\n");
     if (sqlite3_open_v2("file::memory:", &server.sql_db,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
                         NULL)) {
