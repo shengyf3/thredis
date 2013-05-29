@@ -460,20 +460,16 @@ static void redis_func(sqlite3_context *ctx, int argc, sqlite3_value **sql_argv)
     pthread_mutex_unlock(c->lock);
 }
 
-/* initialize the SQLite in-memory database */
+sqlite3_vfs *sqlite3_redis_vfs(void);
 void sqlInit(void) {
-    if (sqlite3_open_v2("file::memory:", &server.sql_db,
-                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
-                        NULL)) {
-        redisLog(REDIS_WARNING, "Could not initialize SQLite database, exiting.");
-        exit(1);
-    }
+    sqlite3_vfs_register(sqlite3_redis_vfs(), 0);
     server.sql_threads = 0;
 }
 
 /* initialize the per-client SQLite in-memory database connection */
 void sqlClientInit(redisClient *c) {
-    if (sqlite3_open_v2("file::memory:", &c->sql_db,
+    char *errmsg;
+    if (sqlite3_open_v2("file:redis_db?vfs=redis", &c->sql_db,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_SHAREDCACHE,
                         NULL)) {
         redisLog(REDIS_WARNING, "Could not create SQLite database connection, exiting.");
@@ -484,6 +480,8 @@ void sqlClientInit(redisClient *c) {
 
     sqlite3_create_function(c->sql_db, "redis", -1, SQLITE_ANY, (void*)c, redis_func, NULL, NULL);
     sqlite3_create_module(c->sql_db, "redis", &redis_module, NULL);
+
+    sqlite3_exec(c->sql_db, "PRAGMA journal_mode = OFF", NULL, NULL, &errmsg);
 }
 
 /* close per-client SQLite in-memory database connection */
@@ -841,70 +839,6 @@ void sqlCommand(redisClient *c) {
 
 void sqlprepareCommand(redisClient *c) {
     sqlGenericCommand(c, 1);
-}
-
-int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save) {
-    int rc;
-    sqlite3 *file;
-    sqlite3_backup *backup;
-    sqlite3 *to;
-    sqlite3 *from;
-
-    /* Open the database file identified by filename. Exit early if
-     * this fails for any reason. */
-
-    rc = sqlite3_open(filename, &file);
-
-    if (rc==SQLITE_OK) {
-
-        from = is_save ? inmemory : file;
-        to   = is_save ? file : inmemory;
-
-        backup = sqlite3_backup_init(to, "main", from, "main");
-        if (backup) {
-            do {
-                rc = sqlite3_backup_step(backup, 4096);
-                if (rc==SQLITE_BUSY || rc==SQLITE_LOCKED) {
-                    /* the db should be under exclusive transaction lock at this point */
-                    redisLog(REDIS_WARNING, "sqlite3_backup_step returned BUSY or LOCKED, aborting.");
-                    break; /* alternatively we could sqlite3_sleep() and try again */
-                }
-            } while(rc==SQLITE_OK || rc==SQLITE_BUSY || rc==SQLITE_LOCKED);
-            sqlite3_backup_finish(backup);
-        }
-        rc = sqlite3_errcode(to);
-    }
-
-    sqlite3_close(file);
-
-    if (rc == SQLITE_OK) {
-        if (is_save)
-            redisLog(REDIS_NOTICE,"SQL DB [%s] saved on disk", filename);
-    } else
-        if (is_save)
-            redisLog(REDIS_WARNING, "Error saving SQL DB [%s] on disk: %s", filename, strerror(errno));
-        else
-            redisLog(REDIS_WARNING, "Error loading SQL DB [%s] from disk: %s", filename, strerror(errno));
-
-    /* SQLITE_OK and REDIS_OK are the same value: 0 */
-    return rc;
-}
-
-void sqlsaveCommand(redisClient *c) {
-
-    if (loadOrSaveDb(server.sql_db, server.sql_filename, 1) != SQLITE_OK)
-        addReplyError(c,"Error while saving SQL data.");
-    else
-        addReply(c, shared.ok);
-}
-
-void sqlloadCommand(redisClient *c) {
-
-    if (loadOrSaveDb(server.sql_db, server.sql_filename, 0) != SQLITE_OK)
-        // THREDIS TODO - should we panic?
-        addReplyError(c,"Error while loading SQL data.");
-    else
-        addReply(c, shared.ok);
 }
 
 char *redisProtocolToSQLType(sqlite3_context *ctx, sds *sql_reply, char *reply) {

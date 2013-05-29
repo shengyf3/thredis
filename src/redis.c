@@ -253,8 +253,7 @@ struct redisCommand redisCommandTable[] = {
     {"bitop",bitopCommand,-4,"wm",0,NULL,2,-1,1,0,0},
     {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0},
     {"sql",sqlCommand,-2,"wm",0,NULL,1,1,1,0,0},
-    {"sqlprepare",sqlprepareCommand,-2,"wm",0,NULL,1,1,1,0,0},
-    {"sqlsave",sqlsaveCommand,1,"ar",0,NULL,0,0,0,0,0}
+    {"sqlprepare",sqlprepareCommand,-2,"wm",0,NULL,1,1,1,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -1136,7 +1135,6 @@ void initServerConfig() {
     server.aof_flush_postponed_start = 0;
     server.pidfile = zstrdup("/var/run/redis.pid");
     server.rdb_filename = zstrdup("dump.rdb");
-    server.sql_filename = zstrdup("dump.sqlite");
     server.aof_filename = zstrdup("appendonly.aof");
     server.requirepass = NULL;
     server.rdb_compression = 1;
@@ -1756,7 +1754,7 @@ int processCommand(redisClient *c) {
             p == lremCommand || p == lsetCommand ||
             p == ltrimCommand || p == migrateCommand ||
             p == restoreCommand || p == bgsaveCommand ||
-            p == sqlsaveCommand || p == sqlCommand ||
+            p == sqlCommand ||
             p == sdiffCommand || p == sdiffstoreCommand ||
             p == sinterCommand || p == sinterstoreCommand ||
             p == sortCommand || p == sunionCommand ||
@@ -2852,14 +2850,6 @@ void loadDataFromDisk(void) {
             redisLog(REDIS_WARNING,"Fatal error loading the DB. Exiting.");
             exit(1);
         }
-    }
-    start = ustime();
-    if (loadOrSaveDb(server.sql_db, server.sql_filename, 0) != SQLITE_OK) {
-        redisLog(REDIS_WARNING,"Fatal error loading SQL DB. Exiting");
-        exit(1);
-    } else {
-        redisLog(REDIS_NOTICE,"SQL DB loaded from disk: %.3f seconds",
-                (float)(ustime()-start)/1000000);
     }
 }
 

@@ -681,7 +681,6 @@ struct redisServer {
 
     sqlite3 *sql_db;                  /* SQLite db */
     int sql_threads;
-    char *sql_filename;               /* Name of SQL dump file */
 };
 
 typedef struct pubsubPattern {
@@ -1067,9 +1066,6 @@ void scriptingRelease(redisClient *c);
 void sqlInit(void);
 void sqlClientInit(redisClient *c);
 void sqlClientClose(redisClient *c);
-int loadOrSaveDb(sqlite3 *inmemory, const char *filename, int is_save);
-int sqlExclusiveLock(void);
-int sqlExclusiveUnlock(void);
 
 /* Git SHA1 */
 char *redisGitSHA1(void);
@@ -1220,7 +1216,6 @@ void bitcountCommand(redisClient *c);
 void replconfCommand(redisClient *c);
 void sqlCommand(redisClient *c);
 void sqlprepareCommand(redisClient *c);
-void sqlsaveCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
